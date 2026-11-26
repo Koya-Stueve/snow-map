@@ -92,7 +92,8 @@ export class SurfaceSync {
       // Right after setTiles() the source still reports "loaded" (old tiles) –
       // only trust that once a tile of the new request set has come in
       if (e.tile) this.awaitingTiles = false;
-      if (!this.awaitingTiles && map.isSourceLoaded(SURFACE_SOURCE_ID) && this.wanted !== this.shown) this.apply();
+      if (!this.awaitingTiles && map.getSource(SURFACE_SOURCE_ID) && map.isSourceLoaded(SURFACE_SOURCE_ID) && this.wanted !== this.shown)
+        this.apply();
     });
     // Waiters (frame export) need everything on screen: resolve on 'idle'
     map.on('idle', () => {
@@ -112,6 +113,7 @@ export class SurfaceSync {
   /** Ask the map to show `version` (coalesced while a reload is still running). */
   request(version: number) {
     this.wanted = version;
+    if (!this.map.getSource(SURFACE_SOURCE_ID)) return; // style not ready; style.load applies it
     const busy = this.awaitingTiles || !this.map.isSourceLoaded(SURFACE_SOURCE_ID);
     if (this.shown === 0 || !busy) this.apply();
   }

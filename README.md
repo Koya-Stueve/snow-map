@@ -48,6 +48,26 @@ Im Modus **optisch verfeinert** (Standard, umschaltbar an der Legende) wird der 
 
 Nullgradgrenze und Wind werden über das gewählte Zeitfenster schneefallgewichtet gemittelt. Das Verfahren ist **eine optische Darstellung, keine Messung und nicht massenerhaltend.** Die Zahlen an den Resorts sind immer die unveränderten Modellwerte.
 
+## Säulen-Ansicht
+
+Der Schalter „▭ Fläche / ▮▮ Säulen“ an der Legende zeigt den Schnee als 3D-Säulen, ähnlich dem Inspo-Clip 09-24-24. Jede Modellzelle wird dafür in 4 × 4 Säulen zu je ~2,5 km aufgeteilt.
+- **Höhe:** 1 cm Neuschnee ergibt 100 m Säule, im Modus „Stündlich“ 1 cm/h 1 km.
+- **Verfeinert:** Zusätzlich fließt der Höhenfaktor ein (siehe oben).
+- **Farbe:** dunkelblau am Boden, weiß in der Mitte, pink ab 40 cm (4 cm/h, 200 cm Schneehöhe).
+- **Technik:** eigener WebGL-Layer mit Instancing, ~85 000 Säulen in einem Zeichenaufruf.
+
+## Rendern (Standbild / Video)
+
+Dev-Server starten, dann:
+
+```sh
+node scripts/render-preview.mjs still daisetsu            # renders/daisetsu.png
+node scripts/render-preview.mjs video daisetsu 240        # renders/daisetsu.mp4 (~11 s)
+COLUMNS=1 node scripts/render-preview.mjs video niseko    # Säulen-Ansicht
+```
+
+Gerendert wird Bild für Bild auf der echten GPU, mit 2× Supersampling, 1080 × 1920 und x264 CRF 16. Unter PowerShell setzt man Variablen mit `$env:COLUMNS=1`.
+
 ## Daten und Lizenzen
 
 - **Wetter:** [Open-Meteo.com](https://open-meteo.com/), Modell DWD ICON Global, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

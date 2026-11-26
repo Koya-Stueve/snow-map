@@ -15,6 +15,8 @@ export interface MapPalette {
   surface: SurfaceTheme;
   /** Sky + distance fog for tilted 3D views */
   sky: { sky: string; horizon: string; fog: string };
+  /** Column view: colour at the ground → mid height → top of tall columns (rgb 0..1) */
+  columns: { low: [number, number, number]; mid: [number, number, number]; high: [number, number, number] };
 }
 
 export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
@@ -35,6 +37,8 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
       snowAo: 0.55,
     },
     sky: { sky: '#050914', horizon: '#22345c', fog: '#0c1529' },
+    // dark blue melting into the navy relief → white → pink (Inspo clip 09-24-24)
+    columns: { low: [0.1, 0.15, 0.3], mid: [0.93, 0.96, 1], high: [1, 0.36, 0.65] },
   },
   // Light grey relief + colourful snow scale (Inspo images)
   light: {
@@ -53,6 +57,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
       snowAo: 0.45,
     },
     sky: { sky: '#9ec3e6', horizon: '#eef3f7', fog: '#e6ecf1' },
+    columns: { low: [0.45, 0.58, 0.78], mid: [0.97, 0.98, 1], high: [1, 0.3, 0.6] },
   },
 };
 

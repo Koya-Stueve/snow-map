@@ -13,6 +13,15 @@ import { CAMERA_PRESETS } from './map/cameras';
 import { loadTerrainIndex, registerTerrainProtocols, terrainInfoForWorkers } from './map/terrainSource';
 import { buildLut, PALETTES, type ColorLut } from './render/palette';
 import { SurfaceRenderer, SurfaceSync } from './render/surface/surfaceSource';
+import { ELEV_FACTOR_MAX, ELEV_FACTOR_MIN, ELEV_GAIN_PER_M } from './render/surface/shading';
+import { buildColumnGrid, type ColumnGrid } from './render/columns/columnGrid';
+import { ColumnsLayer } from './render/columns/columnsLayer';
+import { CellGrid } from './data/cellGrid';
+
+// Column view scaling: metres of column per cm of snow; colour reaches pink at COLOR_REF
+const COLUMN_M_PER_CM = 100;
+const COLUMN_COLOR_REF_CM = 40;
+const COLUMN_MIN_CM = 0.5;
 import { Legend } from './ui/legend';
 import { MAP_PALETTES, loadTheme, saveTheme, type ThemeName } from './theme';
 import { RESORTS } from './data/resorts';
@@ -160,6 +169,87 @@ refineBtn.addEventListener('click', () => {
   renderAt(time.state);
 });
 
+// --- Display: snow on the surface, or as 3D columns (Inspo clip 09-24-24) ---
+let columnsMode = stored('snowmap.columns', false);
+const columnsBtn = document.createElement('button');
+columnsBtn.type = 'button';
+columnsBtn.className = 'refine-toggle';
+columnsBtn.title = 'Säulen: Schnee als 3D-Säulen (~2,5 km), Höhe und Farbe nach Menge. Fläche: Schnee auf dem Gelände.';
+legendSlot.appendChild(columnsBtn);
+const syncColumnsBtn = () => {
+  columnsBtn.textContent = columnsMode ? '▮▮ Säulen' : '▭ Fläche';
+  columnsBtn.classList.toggle('active', columnsMode);
+};
+syncColumnsBtn();
+
+const cellGrid = new CellGrid(dataset.grid, dataset.cells);
+const denseSnow = new Float32Array(dataset.grid.nx * dataset.grid.ny);
+const denseHref = dataset.elevationMean ? cellGrid.scatter(dataset.elevationMean, new Float32Array(denseSnow.length)) : null;
+let columns: ColumnsLayer | null = null;
+let columnsLoading: Promise<void> | null = null;
+
+/** Build the column geometry on first use (needs terrain heights per column) */
+function ensureColumns(): Promise<void> {
+  columnsLoading ??= (async () => {
+    const info = terrainInfoForWorkers();
+    const dem = new Set(info.demKeys);
+    const url = (z: number, x: number, y: number) =>
+      dem.has(`${z}/${x}/${y}`)
+        ? `${info.base}dem/${z}/${x}/${y}.${info.ext}`
+        : `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+    const grid = await buildColumnGrid(dataset.grid, dataset.cells, url);
+    columns = new ColumnsLayer(grid, { ...MAP_PALETTES[theme].columns, colorRefMeters: COLUMN_COLOR_REF_CM * COLUMN_M_PER_CM });
+    addColumnsLayer();
+    renderAt(time.state);
+  })();
+  return columnsLoading;
+}
+function addColumnsLayer() {
+  if (!columns || map.getLayer(columns.id)) return;
+  columns.style = { ...MAP_PALETTES[theme].columns, colorRefMeters: COLUMN_COLOR_REF_CM * COLUMN_M_PER_CM };
+  map.addLayer(columns, 'boundary');
+}
+map.on('style.load', () => {
+  if (columnsMode) addColumnsLayer();
+});
+columnsBtn.addEventListener('click', () => {
+  columnsMode = !columnsMode;
+  store('snowmap.columns', columnsMode);
+  syncColumnsBtn();
+  if (columnsMode) {
+    if (columns) addColumnsLayer();
+    void ensureColumns();
+  } else if (columns && map.getLayer(columns.id)) map.removeLayer(columns.id);
+  renderAt(time.state);
+});
+
+/** Column scaling per layer/mode: metres per unit, unit value where the colour turns pink, legend ticks */
+function columnSpec(vt: ViewTime) {
+  if (layer.id === 'snow_depth') return { mPerUnit: COLUMN_M_PER_CM / 5, colorRef: 200, ticks: [0, 50, 100, 200], minValue: 2 };
+  if (vt.mode === 'hourly') return { mPerUnit: COLUMN_M_PER_CM * 10, colorRef: 4, ticks: [0, 1, 2, 4], minValue: 0.1 };
+  return { mPerUnit: COLUMN_M_PER_CM, colorRef: COLUMN_COLOR_REF_CM, ticks: [0, 10, 20, 40], minValue: COLUMN_MIN_CM };
+}
+
+/** Column heights (m) for the state: bilinear model value × elevation factor (if refined) */
+const columnHeights = (vt: ViewTime, spec: ReturnType<typeof columnSpec>): Float32Array => {
+  const g: ColumnGrid = columns!.grid;
+  cellGrid.scatter(layer.cellsAt(vt), denseSnow);
+  const out = new Float32Array(g.count);
+  const nx = dataset.grid.nx;
+  for (let i = 0; i < g.count; i++) {
+    const k = g.cellIdx[i];
+    if (k < 0) continue;
+    const tx = g.tx[i];
+    const ty = g.ty[i];
+    const bil = (f: Float32Array) =>
+      (f[k] * (1 - tx) + f[k + 1] * tx) * (1 - ty) + (f[k + nx] * (1 - tx) + f[k + nx + 1] * tx) * ty;
+    let v = bil(denseSnow);
+    if (refined && denseHref && v > 0) v *= Math.min(ELEV_FACTOR_MAX, Math.max(ELEV_FACTOR_MIN, 1 + ELEV_GAIN_PER_M * (g.ground[i] - bil(denseHref))));
+    out[i] = v >= spec.minValue ? v * spec.mPerUnit : 0;
+  }
+  return out;
+};
+
 const lutCache = new Map<string, { lut: ColorLut; packed: Int32Array }>();
 function lutFor(mode: ViewTime['mode']) {
   const key = `${layer.id}|${mode}|${theme}`;
@@ -233,12 +323,21 @@ function renderAt(vt: ViewTime) {
     layer.describe(vt, `${formatDay(start)} ${formatTime(start)}`) +
     ` · Prognosestunde +${leadH} h · Lauf ${formatRun(dataset.meta.runTime)}`;
 
+  // Column view: columns carry the snow, the surface shows bare terrain
+  const showColumns = columnsMode && !!columns;
+  if (columns) {
+    const spec = columnSpec(vt);
+    columns.visible = columnsMode;
+    columns.style = { ...MAP_PALETTES[theme].columns, colorRefMeters: spec.colorRef * spec.mPerUnit };
+    if (columnsMode) columns.setHeights(columnHeights(vt, spec));
+  }
+
   // Surface tiles (terrain light + AO + snow) for this state
   const { lut, packed } = lutFor(vt.mode);
   const ref = refined ? layer.refinementAt(vt) : null;
   lastVersion = surface.setFrame({
     refined,
-    snow: layer.cellsAt(vt).slice(),
+    snow: showColumns ? new Float32Array(dataset.cells.length) : layer.cellsAt(vt).slice(),
     fl: ref?.fl ? ref.fl.slice() : null,
     wx: ref ? ref.wx.slice() : null,
     wy: ref ? ref.wy.slice() : null,
@@ -248,7 +347,11 @@ function renderAt(vt: ViewTime) {
     theme: MAP_PALETTES[theme].surface,
   });
   surfaceSync.request(lastVersion);
-  legend.update(`${layer.label} · ${layer.unit(vt.mode)}`, layer.colorStops(vt.mode), lut);
+  if (showColumns) {
+    const spec = columnSpec(vt);
+    const c = MAP_PALETTES[theme].columns;
+    legend.updateGradient(`${layer.label} · ${layer.unit(vt.mode)} · Säulen`, [c.low, c.mid, c.high], spec.ticks, spec.colorRef);
+  } else legend.update(`${layer.label} · ${layer.unit(vt.mode)}`, layer.colorStops(vt.mode), lut);
 
   const values: Record<string, number> = {};
   for (const r of RESORTS) {
@@ -264,9 +367,24 @@ function renderAt(vt: ViewTime) {
 }
 
 time.subscribe(renderAt);
+if (columnsMode) void ensureColumns();
 
 /** Resolves when the surface tiles of the last rendered state are on screen. */
 const surfaceReady = () => surfaceSync.waitForVersion(lastVersion);
 
 // Expose for debugging and later export tooling
-Object.assign(window, { snowMap: map, snowApp: { time, renderAt, surfaceReady, surface, dataset, layer, lutFor } });
+Object.assign(window, { snowMap: map, snowApp: {
+    time,
+    renderAt,
+    surfaceReady,
+    surface,
+    dataset,
+    get layer() {
+      return layer;
+    },
+    get columns() {
+      return columns;
+    },
+    lutFor,
+  },
+});

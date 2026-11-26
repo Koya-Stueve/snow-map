@@ -7,7 +7,7 @@
 //   node scripts/render-preview.mjs video [shot] [frames]  → renders/<shot>.mp4
 //
 // Shots: daisetsu (default), niseko, tomamu.
-// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), LAYER
+// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), COLUMNS=1 (column view), LAYER
 // (snowfall | snow_depth), GPU=0 (software), FFMPEG (path to ffmpeg).
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
@@ -54,13 +54,21 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
-await page.evaluateOnNewDocument((layer) => {
-  try {
-    localStorage.setItem('snowmap.layer', layer);
-  } catch {}
-}, LAYER);
+const COLUMNS = process.env.COLUMNS === '1';
+await page.evaluateOnNewDocument(
+  (layer, columns) => {
+    try {
+      localStorage.setItem('snowmap.layer', layer);
+      localStorage.setItem('snowmap.columns', columns ? '1' : '0');
+    } catch {}
+  },
+  LAYER,
+  COLUMNS,
+);
 await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
 await page.waitForFunction(() => window.snowMap && window.snowApp, { timeout: 120000 });
+if (COLUMNS) await page.waitForFunction(() => window.snowApp.columns, { timeout: 180000 });
+const suffix = (LAYER === 'snowfall' ? '' : '-' + LAYER) + (COLUMNS ? '-columns' : '');
 
 const renderer = await page.evaluate(() => {
   const gl = document.createElement('canvas').getContext('webgl2');
@@ -148,7 +156,7 @@ const downscale = ['-vf', `scale=${W}:${H}:flags=lanczos`];
 if (mode === 'still') {
   const ms = await frame(96, 1);
   const raw = path.join(OUT, `${shotName}-raw.png`);
-  const file = path.join(OUT, `${shotName}${LAYER === 'snowfall' ? '' : '-' + LAYER}.png`);
+  const file = path.join(OUT, `${shotName}${suffix}.png`);
   await page.screenshot({ path: raw });
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', raw, ...downscale, file]);
   await rm(raw);
@@ -168,7 +176,7 @@ if (mode === 'still') {
       console.log(`frame ${i + 1}/${n} t=${ts[i].toFixed(1)} h (${ms} ms, ${s.toFixed(0)} s, ~${((s / (i + 1)) * (n - i - 1)).toFixed(0)} s left)`);
     }
   }
-  const mp4 = path.join(OUT, `${shotName}${LAYER === 'snowfall' ? '' : '-' + LAYER}.mp4`);
+  const mp4 = path.join(OUT, `${shotName}${suffix}.mp4`);
   // hold the last frame for a second, downscale (SSAA), high-quality x264
   execFileSync(FFMPEG, [
     '-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, '%04d.png'),

@@ -18,7 +18,11 @@ if (!executablePath) throw new Error('No Edge/Chrome found; set BROWSER_PATH');
 const browser = await puppeteer.launch({
   executablePath,
   headless: true,
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+  // GPU=1 → real GPU (ANGLE D3D11), otherwise software rendering
+  args:
+    process.env.GPU === '1'
+      ? ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist']
+      : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
   defaultViewport: { width: Number(w), height: Number(h) },
 });
 const page = await browser.newPage();

@@ -38,17 +38,41 @@ export class Legend {
     }
     ctx.putImageData(img, 0, 0);
 
-    // Skip ticks that would crowd their neighbour (always keep first + last)
+    this.setTicks(
+      stops.map((s) => s.value),
+      stops.map((s) => (Math.log(s.value) - lnA) / (lnB - lnA)),
+    );
+  }
+
+  /** Linear 3-colour gradient (column view: ground → mid → top) with value ticks */
+  updateGradient(title: string, colors: Array<[number, number, number]>, ticks: number[], maxValue: number) {
+    const key = `G|${title}|${colors.flat().join(',')}|${ticks.join(',')}|${maxValue}`;
+    if (key === this.key) return;
+    this.key = key;
+    this.title.textContent = title;
+    const ctx = this.bar.getContext('2d')!;
+    const img = ctx.createImageData(this.bar.width, 1);
+    for (let x = 0; x < this.bar.width; x++) {
+      const t = x / (this.bar.width - 1);
+      const [a, b, f] = t < 0.5 ? [colors[0], colors[1], t / 0.5] : [colors[1], colors[2], (t - 0.5) / 0.5];
+      const s = f * f * (3 - 2 * f);
+      img.data.set([0, 1, 2].map((k) => (a[k] + (b[k] - a[k]) * s) * 255).concat(255), x * 4);
+    }
+    ctx.putImageData(img, 0, 0);
+    this.setTicks(ticks, ticks.map((v) => v / maxValue));
+  }
+
+  // Skip ticks that would crowd their neighbour (always keep first + last)
+  private setTicks(values: number[], pos: number[]) {
     this.ticks.innerHTML = '';
     const MIN_GAP = 0.1;
-    const pos = stops.map((s) => (Math.log(s.value) - lnA) / (lnB - lnA));
     let last = -1;
-    stops.forEach((s, i) => {
-      const isLast = i === stops.length - 1;
+    values.forEach((v, i) => {
+      const isLast = i === values.length - 1;
       if (i > 0 && !isLast && (pos[i] - last < MIN_GAP || 1 - pos[i] < MIN_GAP)) return;
       const t = document.createElement('span');
       t.style.left = `${pos[i] * 100}%`;
-      t.textContent = String(s.value).replace('.', ',');
+      t.textContent = (isLast && values.length > 2 && pos[i] >= 1 ? '≥' : '') + String(v).replace('.', ',');
       this.ticks.appendChild(t);
       last = pos[i];
     });
