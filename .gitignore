@@ -14,3 +14,6 @@ public/terrain/
 
 # Downloaded source DEMs (GSI Kiban Chizu Joho etc.)
 dem-src/
+
+# Rendered stills / videos
+/renders/

@@ -55,6 +55,9 @@ const store = (key: string, value: boolean) => {
 maplibregl.setWorkerUrl(workerUrl);
 registerTerrainProtocols();
 
+// ?render=1: clean output for stills/video frames (no interactive controls)
+if (new URLSearchParams(location.search).has('render')) document.body.classList.add('render-mode');
+
 // --- Data first: the surface renderer must exist before the map asks for tiles ---
 const [terrainIndex, { dataset, fallbackReason }] = await Promise.all([loadTerrainIndex(), loadDataset()]);
 const layer = new SnowfallLayer();

@@ -188,6 +188,17 @@ body {
   border-color: var(--accent);
 }
 
+/* Render mode (?render=1): only what belongs in a still/video frame */
+.render-mode .timeline,
+.render-mode .hud-controls,
+.render-mode .maplibregl-ctrl-top-right,
+.render-mode .refine-toggle {
+  display: none !important;
+}
+.render-mode .hud-bottom {
+  bottom: calc(24px + env(safe-area-inset-bottom));
+}
+
 /* Bottom panel: timeline + source line */
 .hud-bottom {
   left: 50%;
