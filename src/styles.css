@@ -103,11 +103,34 @@ body {
   -webkit-appearance: none;
 }
 
-/* Keep the header readable over bright snow */
-.hud-top {
-  text-shadow:
-    0 1px 2px var(--bg),
-    0 0 10px var(--bg);
+/* Header block (title, time, legend) on a translucent panel: readable over bright snow */
+.hud.hud-top {
+  right: auto;
+  max-width: calc(100% - 2 * var(--gutter) - 56px);
+  padding: 12px 14px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+@media (max-width: 480px) {
+  .hud.hud-top {
+    padding: 10px 12px 8px;
+  }
+  /* Region picker as a compact icon button so it doesn't overlap the header panel */
+  .btn.btn-select {
+    width: 34px;
+    padding: 0;
+    color: transparent;
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2390a0c0' stroke-width='2'%3E%3Ccircle cx='12' cy='10' r='3'/%3E%3Cpath d='M12 21s-7-6.1-7-11a7 7 0 0 1 14 0c0 4.9-7 11-7 11z'/%3E%3C/svg%3E")
+        center / 18px no-repeat,
+      var(--panel);
+  }
+  .btn.btn-select option {
+    color: initial;
+  }
 }
 .btn {
   width: 34px;
@@ -149,15 +172,19 @@ body {
 .legend-bar {
   display: block;
   width: 100%;
-  height: 8px;
-  border-radius: 1px;
+  height: 10px;
+  border-radius: 2px;
   image-rendering: auto;
+  /* thin outline so the bright end stays visible on the light theme */
+  box-shadow: 0 0 0 1px var(--panel-border);
 }
 .legend-ticks {
   position: relative;
-  height: 14px;
-  font-size: 9.5px;
-  color: var(--fg-muted);
+  height: 16px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  opacity: 0.85;
 }
 .legend-ticks span {
   position: absolute;
@@ -208,10 +235,16 @@ body {
 }
 .source-line {
   margin-top: 6px;
+  padding: 4px 8px;
   font-size: 9.5px;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
   text-transform: uppercase;
+  /* own subtle panel: readable over terrain, also in render mode without the timeline */
+  background: var(--panel);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
 .source-line a {
