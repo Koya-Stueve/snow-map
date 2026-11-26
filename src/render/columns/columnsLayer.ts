@@ -43,16 +43,25 @@ uniform vec3 u_low;
 uniform vec3 u_mid;
 uniform vec3 u_high;
 uniform float u_ref;
+uniform float u_alphaLow;   // opacity at the ground (dark, low part of a column)
+uniform float u_opaqueAt;   // relative height (0..1) from which columns are fully opaque
+uniform int u_pass;         // 0 = opaque fragments only, 1 = translucent fragments only
 in float v_rel;
 in vec3 v_normal;
 out vec4 fragColor;
 void main() {
   float t = clamp(v_rel / u_ref, 0.0, 1.0);
   vec3 c = t < 0.5 ? mix(u_low, u_mid, smoothstep(0.0, 1.0, t / 0.5)) : mix(u_mid, u_high, smoothstep(0.0, 1.0, (t - 0.5) / 0.5));
+  // Glass-like low parts: opacity grows with height, tall columns stay solid
+  float a = mix(u_alphaLow, 1.0, smoothstep(0.0, u_opaqueAt, t));
+  bool opaque = a > 0.995;
+  if ((u_pass == 0) != opaque) discard;
   // simple light from the north-west + sky
   vec3 l = normalize(vec3(-0.55, 0.55, 0.65));
   float shade = 0.55 + 0.45 * max(dot(normalize(v_normal), l), 0.0);
-  fragColor = vec4(c * shade, 1.0);
+  // translucent faces catch a little extra light on top so the glass reads as a volume
+  float rim = u_pass == 1 ? 0.18 * max(v_normal.z, 0.0) : 0.0;
+  fragColor = vec4(c * shade + rim, opaque ? 1.0 : a);
 }`;
 
 /** Column width as a fraction of the grid spacing */
@@ -94,6 +103,10 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
   heightExaggeration = 1;
   /** Debug: number of draw calls so far */
   renders = 0;
+  /** Opacity at the ground; 1 = solid columns */
+  alphaLow = 0.22;
+  /** Relative colour height (0..1) from which a column is fully opaque */
+  opaqueAt = 0.6;
 
   constructor(
     readonly grid: ColumnGrid,
@@ -125,7 +138,8 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) ?? 'link error');
     this.program = p;
-    for (const u of ['u_matrix', 'u_exag', 'u_heightExag', 'u_low', 'u_mid', 'u_high', 'u_ref']) this.uniforms[u] = gl.getUniformLocation(p, u);
+    for (const u of ['u_matrix', 'u_exag', 'u_heightExag', 'u_low', 'u_mid', 'u_high', 'u_ref', 'u_alphaLow', 'u_opaqueAt', 'u_pass'])
+      this.uniforms[u] = gl.getUniformLocation(p, u);
 
     const g = this.grid;
     const n = g.count;
@@ -189,12 +203,34 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     gl.uniform3fv(this.uniforms.u_mid, s.mid);
     gl.uniform3fv(this.uniforms.u_high, s.high);
     gl.uniform1f(this.uniforms.u_ref, s.colorRefMeters);
+    gl.uniform1f(this.uniforms.u_alphaLow, this.alphaLow);
+    gl.uniform1f(this.uniforms.u_opaqueAt, this.opaqueAt);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
+    // Mercator y points south, which mirrors the box: its outward faces wind clockwise
+    gl.enable(gl.CULL_FACE);
+    gl.frontFace(gl.CW);
+    gl.cullFace(gl.BACK);
+
+    // Pass 1: solid parts, writing depth
+    gl.uniform1i(this.uniforms.u_pass, 0);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
-    gl.disable(gl.CULL_FACE); // depth test is enough; winding flips in mercator (y down)
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, this.grid.count);
+
+    // Pass 2: translucent parts, blended over terrain + solid parts, no depth writes
+    // (so overlapping glass doesn't punch holes; order artefacts stay subtle at low alpha)
+    if (this.alphaLow < 0.995) {
+      gl.uniform1i(this.uniforms.u_pass, 1);
+      gl.depthMask(false);
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, this.grid.count);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+    }
+    gl.disable(gl.CULL_FACE);
+    gl.frontFace(gl.CCW);
     gl.bindVertexArray(null);
   }
 
