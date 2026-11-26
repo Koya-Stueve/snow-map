@@ -8,7 +8,11 @@ import '@fontsource/jetbrains-mono/700.css';
 import '@fontsource/oswald/600.css';
 import './styles.css';
 
-import { buildStyle } from './map/style';
+import { buildStyle, WEATHER_INSERT_BEFORE } from './map/style';
+import { RasterOverlay } from './map/rasterOverlay';
+import { ScalarCanvas } from './render/scalarCanvas';
+import { buildLut, PALETTES, type ColorLut } from './render/palette';
+import { Legend } from './ui/legend';
 import { loadTheme, saveTheme, type ThemeName } from './theme';
 import { RESORTS } from './data/resorts';
 import { createSyntheticDataset } from './data/synthetic';
@@ -53,17 +57,31 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-ri
 // No MapLibre attribution control: all required credits (with links) are in our
 // own always-visible source line, which also ends up in exported videos.
 
+// --- Data + layer (synthetic until step 5) ---
+const dataset = createSyntheticDataset();
+const layer = new SnowfallLayer();
+layer.prepare(dataset);
+
+// --- Map raster for the active layer ---
+const scalar = new ScalarCanvas(dataset.grid, 3);
+const overlay = new RasterOverlay(map, scalar, 'weather', WEATHER_INSERT_BEFORE);
+const fieldBuf = new Float32Array(dataset.grid.nx * dataset.grid.ny);
+const legend = new Legend(document.getElementById('legend-slot')!);
+const lutCache = new Map<string, ColorLut>();
+function lutFor(mode: ViewTime['mode']): ColorLut {
+  const key = `${layer.id}|${mode}|${theme}`;
+  let lut = lutCache.get(key);
+  if (!lut) lutCache.set(key, (lut = buildLut(layer.colorStops(mode), PALETTES[theme])));
+  return lut;
+}
+
 document.getElementById('theme-toggle')!.addEventListener('click', () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   saveTheme(theme);
   document.documentElement.dataset.theme = theme;
   map.setStyle(buildStyle(theme));
+  renderAt(time.state); // new palette; overlay re-adds itself on style.load
 });
-
-// --- Data + layer (synthetic until step 5) ---
-const dataset = createSyntheticDataset();
-const layer = new SnowfallLayer();
-layer.prepare(dataset);
 
 const labels = new ResortLabels(map, RESORTS);
 const time = new TimeController(dataset.times);
@@ -92,6 +110,11 @@ function renderAt(vt: ViewTime) {
     `${vt.mode === 'accumulated' ? `${layer.label} seit ${formatDay(dataset.times[vt.startIndex])} ${formatTime(dataset.times[vt.startIndex])}` : `${layer.label} pro Stunde`}` +
     ` · Prognosestunde +${leadH} h · Lauf ${formatRun(dataset.meta.runTime)}`;
 
+  const lut = lutFor(vt.mode);
+  scalar.draw(layer.fieldAt(vt, fieldBuf), lut);
+  overlay.refresh();
+  legend.update(`${layer.label} · ${layer.unit(vt.mode)}`, layer.colorStops(vt.mode), lut);
+
   const values: Record<string, number> = {};
   for (const r of RESORTS) values[r.id] = layer.valueAt(vt, r.lon, r.lat);
   labels.setValues(values, {
@@ -104,4 +127,4 @@ function renderAt(vt: ViewTime) {
 time.subscribe(renderAt);
 
 // Expose for debugging and later export tooling
-Object.assign(window, { snowMap: map, snowApp: { time, renderAt, dataset, layer } });
+Object.assign(window, { snowMap: map, snowApp: { time, renderAt, dataset, layer, scalar, lutFor } });

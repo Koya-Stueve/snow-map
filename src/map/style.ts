@@ -52,7 +52,6 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
         'source-layer': 'water',
         paint: { 'fill-color': p.water },
       },
-      // Snow / weather layers get inserted before this id
       {
         id: 'boundary',
         type: 'line',
@@ -94,5 +93,8 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
   };
 }
 
-/** Layer id that weather layers are inserted below (keeps borders/labels on top). */
-export const WEATHER_INSERT_BEFORE = 'boundary';
+/**
+ * Weather rasters go below the hillshade: the relief then shades the snow,
+ * and the opaque water layer masks values over the sea.
+ */
+export const WEATHER_INSERT_BEFORE = 'hillshade';
