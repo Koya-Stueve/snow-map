@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vite/
+*.log
+
+# Third-party reference material (screen recordings of others' posts) - keep local only
+inspo/

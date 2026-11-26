@@ -1,0 +1,123 @@
+:root {
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Oswald', 'Arial Narrow', sans-serif;
+  --gutter: 16px;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0a1020;
+  --fg: #e8eefc;
+  --fg-muted: #7f8db0;
+  --panel: rgba(10, 16, 32, 0.78);
+  --panel-border: rgba(120, 150, 210, 0.18);
+  --accent: #5fd3f3;
+}
+
+:root[data-theme='light'] {
+  --bg: #eef1f4;
+  --fg: #0f1a2a;
+  --fg-muted: #5b6672;
+  --panel: rgba(255, 255, 255, 0.82);
+  --panel-border: rgba(15, 26, 42, 0.12);
+  --accent: #0e8fb3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+.hud {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+.hud > * {
+  pointer-events: auto;
+}
+
+.hud-top {
+  top: calc(var(--gutter) + env(safe-area-inset-top));
+  left: var(--gutter);
+  right: 80px;
+}
+.kicker {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--fg-muted);
+}
+.kicker::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  background: var(--accent);
+}
+.title {
+  margin: 4px 0 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(28px, 5vw, 44px);
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+.hud-controls {
+  top: calc(var(--gutter) + env(safe-area-inset-top) + 80px);
+  right: 10px;
+}
+.btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--fg);
+  font: 16px var(--font-mono);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.hud-source {
+  left: var(--gutter);
+  right: 48px; /* leave room for the attribution "i" button */
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+
+/* MapLibre controls follow the theme */
+.maplibregl-ctrl-group {
+  background: var(--panel) !important;
+  border: 1px solid var(--panel-border);
+}
+:root[data-theme='dark'] .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+  filter: invert(1);
+}
+.maplibregl-ctrl-attrib {
+  background: var(--panel) !important;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.maplibregl-ctrl-attrib a {
+  color: var(--fg-muted);
+}
