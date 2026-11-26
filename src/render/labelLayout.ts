@@ -40,6 +40,8 @@ export interface LayoutOptions {
   edgePadding?: number;
   /** Minimum gap between boxes */
   gap?: number;
+  /** Screen areas covered by UI (header, controls, timeline): no boxes there, points inside are hidden */
+  obstacles?: Rect[];
 }
 
 const rectsOverlap = (a: Rect, b: Rect, gap: number) =>
@@ -87,12 +89,15 @@ export function layoutLabels(
 ): LabelGeometry[] {
   const pad = opts.edgePadding ?? 8;
   const gap = opts.gap ?? 4;
-  const placedBoxes: Rect[] = [];
+  const obstacles = opts.obstacles ?? [];
+  // UI areas behave like already placed boxes
+  const placedBoxes: Rect[] = [...obstacles];
   const placedLeaders: Segment[] = [];
   const points = inputs.filter(isInView).map((l) => ({ x: l.x, y: l.y }));
 
   function isInView(l: LabelInput) {
-    return l.x >= 0 && l.y >= 0 && l.x <= viewport.width && l.y <= viewport.height;
+    if (l.x < 0 || l.y < 0 || l.x > viewport.width || l.y > viewport.height) return false;
+    return !obstacles.some((o) => l.x >= o.x && l.x <= o.x + o.w && l.y >= o.y && l.y <= o.y + o.h);
   }
 
   const inViewport = (r: Rect) =>

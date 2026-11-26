@@ -1,44 +1,60 @@
-// Build high-resolution terrain tiles from GSI (国土地理院) elevation tiles:
-//   - DEM as Terrarium PNG (for hillshade / 3D terrain / snow shader)
-//   - Ambient occlusion (sky-view factor) as black+alpha PNG
+// Build high-resolution terrain tiles for the map:
+//   - DEM as lossless Terrarium WebP (hillshade, 3D terrain, later the snow shader)
+//   - Ambient occlusion (sky-view factor) as black+alpha WebP
 //
-//   npm run build-terrain                 build pilot regions + Japan overview
-//   npm run build-terrain -- --dry-run    only print tile counts
+//   npm run build-terrain                       all regions + Japan overview
+//   npm run build-terrain -- --only tomamu      one region
+//   npm run build-terrain -- --force            recompute raw tiles (e.g. new dem-src data)
+//   npm run build-terrain -- --dry-run          only print tile counts
 //
-// Output: public/terrain/{dem,ao}/{z}/{x}/{y}.png + public/terrain/index.json (not in git).
-// Source tiles are cached in .cache/gsi/.
+// Sources, best first:
+//   1. dem-src/: GSI 基盤地図情報 数値標高モデル downloads (DEM5A 5 m > DEM10B 10 m), zips welcome
+//   2. GSI 標高タイル dem_png (DEM10B) – fetched politely and cached in .cache/gsi/
+// Pipeline (tile based, so regions and sources can overlap freely):
+//   raw  : float32 tiles in .cache/terrain-raw/ at the region's top zoom (GSI + dem-src overlay)
+//   up   : parents from their four children (missing children → GSI tile of that zoom)
+//   out  : per tile with its 8 neighbours → fill holes, AO, encode → terrain/{dem,ao}/z/x/y.webp
 //
-// Data: 国土地理院 標高タイル (DEM10B), PDL 1.0 – attribution required, and processed
-// data must say so ("国土地理院の標高タイルを加工して作成").
-// NOTE: bulk download is used here for a local test only (agreed with the user); a
-// clean solution (official 基盤地図情報 download / GSI inquiry) is a later TODO.
+// Licence: 国土地理院 (PDL 1.0) – attribution + note that the data was processed.
+// NOTE: bulk fetching of GSI tiles is for a local test (agreed with the user); the
+// clean route is the official 基盤地図情報 download in dem-src/.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PNG } from 'pngjs';
+import sharp from 'sharp';
+import { KibanSource } from './terrain/kiban.ts';
 
 // --- Configuration ---------------------------------------------------------
 
-/** High-res pilot regions [west, south, east, north], built from MAX_Z down to REGION_MIN_Z */
 const REGIONS = [
   { name: 'niseko', bbox: [140.4, 42.6, 141.1, 43.0] },
   { name: 'daisetsu', bbox: [142.15, 43.25, 143.1, 43.85] },
+  { name: 'tomamu', bbox: [142.45, 42.98, 142.93, 43.11] },
 ] as const;
-const MAX_Z = 14; // DEM10B native
+const TOP_Z = 14; // DEM10B native; 5 m data is resampled to this zoom (~7 m/px)
 const REGION_MIN_Z = 10;
-/** Overview for all of Japan, built at OVERVIEW_Z and downsampled to OVERVIEW_MIN_Z */
 const OVERVIEW = { bbox: [128.0, 30.0, 146.0, 46.0], z: 9, minZ: 6 } as const;
 
 const GSI_URL = (z: number, x: number, y: number) => `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${z}/${x}/${y}.png`;
 const REQUESTS_PER_SECOND = 5;
 const USER_AGENT = 'snow-map/0.1 (local terrain preprocessing test)';
+/** Terrarium precision kept in the output (1/8 m) – smaller files, invisible difference */
+const HEIGHT_STEP = 1 / 8;
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const CACHE = path.join(ROOT, '.cache', 'gsi');
-const OUT = path.join(ROOT, 'public', 'terrain');
-const DRY = process.argv.includes('--dry-run');
+const GSI_CACHE = path.join(ROOT, '.cache', 'gsi');
+const RAW = path.join(ROOT, '.cache', 'terrain-raw');
+const KIBAN_SRC = path.join(ROOT, 'dem-src');
+const KIBAN_CACHE = path.join(ROOT, '.cache', 'kiban');
+const OUT = path.join(ROOT, 'terrain');
 const TILE = 256;
+
+const args = process.argv.slice(2);
+const DRY = args.includes('--dry-run');
+const FORCE = args.includes('--force');
+const ONLY = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
 
 const log = (...a: unknown[]) => console.log('[terrain]', ...a);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -50,56 +66,48 @@ const latToTileY = (lat: number, z: number) => {
   const r = (lat * Math.PI) / 180;
   return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z);
 };
-const tileYToLat = (y: number, z: number) => {
-  const n = Math.PI - (2 * Math.PI * y) / 2 ** z;
-  return (180 / Math.PI) * Math.atan(Math.sinh(n));
-};
-/** Ground metres per pixel at zoom z and latitude */
+const tileXToLon = (x: number, z: number) => (x / 2 ** z) * 360 - 180;
+const tileYToLat = (y: number, z: number) => (180 / Math.PI) * Math.atan(Math.sinh(Math.PI - (2 * Math.PI * y) / 2 ** z));
 const metersPerPixel = (z: number, lat: number) => (40075016.686 * Math.cos((lat * Math.PI) / 180)) / (TILE * 2 ** z);
 
-interface TileRange {
-  z: number;
-  x0: number;
-  y0: number;
-  x1: number; // inclusive
-  y1: number;
-}
+type Key = string; // "z/x/y"
+const key = (z: number, x: number, y: number): Key => `${z}/${x}/${y}`;
+const unkey = (k: Key) => k.split('/').map(Number) as [number, number, number];
 
-/** Tile range covering bbox at zoom z, aligned to whole tiles of zoom `alignZ` */
-function rangeFor(bbox: readonly number[], z: number, alignZ = z): TileRange {
+function tilesIn(bbox: readonly number[], z: number): Key[] {
   const [w, s, e, n] = bbox;
-  const f = 2 ** (z - alignZ);
-  return {
-    z,
-    x0: lonToTileX(w, alignZ) * f,
-    y0: latToTileY(n, alignZ) * f,
-    x1: (lonToTileX(e, alignZ) + 1) * f - 1,
-    y1: (latToTileY(s, alignZ) + 1) * f - 1,
-  };
+  const out: Key[] = [];
+  for (let y = latToTileY(n, z); y <= latToTileY(s, z); y++)
+    for (let x = lonToTileX(w, z); x <= lonToTileX(e, z); x++) out.push(key(z, x, y));
+  return out;
 }
-const tileCount = (r: TileRange) => (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1);
 
-// --- GSI download + decode ---------------------------------------------------
+// --- GSI tiles -----------------------------------------------------------------
 
 let lastRequest = 0;
 let downloaded = 0;
 
-/** Returns the PNG bytes, or null if GSI has no tile there (sea) */
-async function gsiTile(z: number, x: number, y: number): Promise<Buffer | null> {
-  const file = path.join(CACHE, `${z}`, `${x}`, `${y}.png`);
-  const missing = file + '.404';
+async function gsiPng(z: number, x: number, y: number): Promise<Buffer | null> {
+  const file = path.join(GSI_CACHE, `${z}`, `${x}`, `${y}.png`);
   if (existsSync(file)) return readFile(file);
-  if (existsSync(missing)) return null;
-
+  if (existsSync(file + '.404')) return null;
   const wait = lastRequest + 1000 / REQUESTS_PER_SECOND - Date.now();
   if (wait > 0) await sleep(wait);
   lastRequest = Date.now();
-
   for (let attempt = 1; ; attempt++) {
-    const res = await fetch(GSI_URL(z, x, y), { headers: { 'User-Agent': USER_AGENT } });
+    let res: Response;
+    try {
+      res = await fetch(GSI_URL(z, x, y), { headers: { 'User-Agent': USER_AGENT } });
+    } catch (e) {
+      // network hiccup (reset, DNS, timeout) – back off and retry
+      if (attempt >= 6) throw e;
+      log(`network error on ${z}/${x}/${y} (${(e as Error).message}), retry ${attempt}...`);
+      await sleep(3000 * attempt);
+      continue;
+    }
     await mkdir(path.dirname(file), { recursive: true });
     if (res.status === 404) {
-      await writeFile(missing, '');
+      await writeFile(file + '.404', '');
       return null;
     }
     if (res.ok) {
@@ -113,55 +121,95 @@ async function gsiTile(z: number, x: number, y: number): Promise<Buffer | null> 
   }
 }
 
-/**
- * GSI dem_png: x = R·2^16 + G·2^8 + B; x < 2^23 → h = x·0.01 m; x = 2^23 → NA;
- * x > 2^23 → h = (x − 2^24)·0.01 m. NA (incl. most water) becomes NaN.
- */
-function decodeGsi(buf: Buffer, out: Float32Array, stride: number, ox: number, oy: number) {
+/** GSI dem_png → metres (NaN = no data). x=R·2^16+G·2^8+B; 2^23 = NA; above = negative. */
+async function gsiRaw(z: number, x: number, y: number): Promise<Float32Array> {
+  const out = new Float32Array(TILE * TILE).fill(NaN);
+  const buf = await gsiPng(z, x, y);
+  if (!buf) return out;
   const png = PNG.sync.read(buf);
-  for (let py = 0; py < TILE; py++)
-    for (let px = 0; px < TILE; px++) {
-      const i = (py * TILE + px) * 4;
-      const v = png.data[i] * 65536 + png.data[i + 1] * 256 + png.data[i + 2];
-      const h = v === 8388608 ? NaN : v < 8388608 ? v * 0.01 : (v - 16777216) * 0.01;
-      out[(oy + py) * stride + ox + px] = h;
+  for (let i = 0; i < TILE * TILE; i++) {
+    const v = png.data[i * 4] * 65536 + png.data[i * 4 + 1] * 256 + png.data[i * 4 + 2];
+    out[i] = v === 8388608 ? NaN : v < 8388608 ? v * 0.01 : (v - 16777216) * 0.01;
+  }
+  return out;
+}
+
+// --- Raw tile store (float32) ---------------------------------------------------
+
+const rawFile = (k: Key) => path.join(RAW, `${k}.f32`);
+async function readRaw(k: Key): Promise<Float32Array | null> {
+  const f = rawFile(k);
+  if (!existsSync(f)) return null;
+  const b = await readFile(f);
+  return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4).slice();
+}
+async function writeRaw(k: Key, data: Float32Array) {
+  const f = rawFile(k);
+  await mkdir(path.dirname(f), { recursive: true });
+  await writeFile(f, Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+}
+const allNaN = (d: Float32Array) => d.every((v) => Number.isNaN(v));
+
+/** Top-zoom raw tile: GSI, overlaid with dem-src (5 m/10 m) where available */
+async function buildTopRaw(k: Key, kiban: KibanSource): Promise<boolean> {
+  if (!FORCE && existsSync(rawFile(k))) return true;
+  const [z, x, y] = unkey(k);
+  const data = await gsiRaw(z, x, y);
+  const w = tileXToLon(x, z);
+  const e = tileXToLon(x + 1, z);
+  const n = tileYToLat(y, z);
+  const s = tileYToLat(y + 1, z);
+  const blocks = kiban.blocksIn(w, s, e, n);
+  if (blocks.length) {
+    const lons = new Float64Array(TILE * TILE);
+    const lats = new Float64Array(TILE * TILE);
+    for (let py = 0; py < TILE; py++) {
+      const lat = tileYToLat(y + (py + 0.5) / TILE, z);
+      for (let px = 0; px < TILE; px++) {
+        lons[py * TILE + px] = tileXToLon(x + (px + 0.5) / TILE, z);
+        lats[py * TILE + px] = lat;
+      }
     }
+    await kiban.sampleInto(lons, lats, data, blocks);
+  }
+  if (allNaN(data)) return false;
+  await writeRaw(k, data);
+  return true;
 }
 
-// --- Raster helpers ----------------------------------------------------------
-
-interface Mosaic {
-  range: TileRange;
-  w: number;
-  h: number;
-  data: Float32Array; // metres, NaN = no data
+/** Parent from its four children (NaN-aware mean); missing quadrants from GSI */
+async function buildParentRaw(k: Key): Promise<boolean> {
+  const [z, x, y] = unkey(k);
+  const kids = await Promise.all([0, 1, 2, 3].map((q) => readRaw(key(z + 1, 2 * x + (q & 1), 2 * y + (q >> 1)))));
+  const data = kids.every(Boolean) ? new Float32Array(TILE * TILE) : await gsiRaw(z, x, y);
+  kids.forEach((kid, q) => {
+    if (!kid) return;
+    const ox = (q & 1) * 128;
+    const oy = (q >> 1) * 128;
+    for (let py = 0; py < 128; py++)
+      for (let px = 0; px < 128; px++) {
+        let sum = 0;
+        let n = 0;
+        for (let d = 0; d < 4; d++) {
+          const v = kid[(2 * py + (d >> 1)) * TILE + 2 * px + (d & 1)];
+          if (!Number.isNaN(v)) {
+            sum += v;
+            n++;
+          }
+        }
+        data[(oy + py) * TILE + ox + px] = n ? sum / n : NaN;
+      }
+  });
+  if (allNaN(data)) return false;
+  await writeRaw(k, data);
+  return true;
 }
 
-async function downloadMosaic(range: TileRange): Promise<Mosaic> {
-  const w = (range.x1 - range.x0 + 1) * TILE;
-  const h = (range.y1 - range.y0 + 1) * TILE;
-  const data = new Float32Array(w * h).fill(NaN);
-  for (let y = range.y0; y <= range.y1; y++)
-    for (let x = range.x0; x <= range.x1; x++) {
-      const buf = await gsiTile(range.z, x, y);
-      if (buf) decodeGsi(buf, data, w, (x - range.x0) * TILE, (y - range.y0) * TILE);
-    }
-  return { range, w, h, data };
-}
+// --- Raster ops ------------------------------------------------------------
 
-/**
- * Fill NaN holes (sea, lakes) smoothly from their surroundings ("push-pull"):
- * build a NaN-aware averaged pyramid, then fill each level's holes from the
- * coarser level. Lakes get their shore height instead of a pit at 0 m.
- */
+/** Fill NaN holes from surrounding values with a push-pull pyramid (lakes keep shore height). */
 function fillHoles(data: Float32Array, w: number, h: number): void {
-  let hasHole = false;
-  for (let i = 0; i < data.length; i++)
-    if (Number.isNaN(data[i])) {
-      hasHole = true;
-      break;
-    }
-  if (!hasHole) return;
+  if (!data.some((v) => Number.isNaN(v))) return;
   if (w <= 1 && h <= 1) {
     if (Number.isNaN(data[0])) data[0] = 0;
     return;
@@ -173,18 +221,17 @@ function fillHoles(data: Float32Array, w: number, h: number): void {
     for (let x = 0; x < cw; x++) {
       let s = 0;
       let n = 0;
-      for (let dy = 0; dy < 2; dy++)
-        for (let dx = 0; dx < 2; dx++) {
-          const xx = 2 * x + dx;
-          const yy = 2 * y + dy;
-          if (xx < w && yy < h) {
-            const v = data[yy * w + xx];
-            if (!Number.isNaN(v)) {
-              s += v;
-              n++;
-            }
+      for (let d = 0; d < 4; d++) {
+        const xx = 2 * x + (d & 1);
+        const yy = 2 * y + (d >> 1);
+        if (xx < w && yy < h) {
+          const v = data[yy * w + xx];
+          if (!Number.isNaN(v)) {
+            s += v;
+            n++;
           }
         }
+      }
       coarse[y * cw + x] = n ? s / n : NaN;
     }
   fillHoles(coarse, cw, ch);
@@ -192,7 +239,6 @@ function fillHoles(data: Float32Array, w: number, h: number): void {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (!Number.isNaN(data[i])) continue;
-      // bilinear from the coarse level for smooth fills
       const fx = Math.min(Math.max((x - 0.5) / 2, 0), cw - 1);
       const fy = Math.min(Math.max((y - 0.5) / 2, 0), ch - 1);
       const x0 = Math.floor(fx);
@@ -207,161 +253,170 @@ function fillHoles(data: Float32Array, w: number, h: number): void {
     }
 }
 
-/** 2×2 average → next lower zoom (ranges are aligned, so sizes halve exactly) */
-function downsample(m: Mosaic): Mosaic {
-  const w = m.w / 2;
-  const h = m.h / 2;
-  const data = new Float32Array(w * h);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const i = 2 * y * m.w + 2 * x;
-      data[y * w + x] = (m.data[i] + m.data[i + 1] + m.data[i + m.w] + m.data[i + m.w + 1]) / 4;
-    }
-  const r = m.range;
-  return { range: { z: r.z - 1, x0: r.x0 / 2, y0: r.y0 / 2, x1: (r.x1 + 1) / 2 - 1, y1: (r.y1 + 1) / 2 - 1 }, w, h, data };
-}
+const AO_STEPS = [1, 2, 3, 5, 8, 12, 18, 27, 40, 60];
 
 /**
- * Sky-view factor ambient occlusion. For each pixel and direction, march outwards
- * (exponentially growing steps) and track the highest horizon angle; occlusion is
- * the mean sine of those angles. Returns occlusion 0 (open) … 1 (fully enclosed).
+ * Sky-view factor ambient occlusion for the centre tile of a 3×3 mosaic:
+ * per direction, march outwards and keep the steepest horizon; occlusion is the
+ * mean sine of those angles (0 = open sky, 1 = enclosed).
  */
-function ambientOcclusion(m: Mosaic, directions: number): Uint8Array {
-  const { w, h, data } = m;
-  const STEPS = [1, 2, 3, 5, 8, 12, 18, 27, 40, 60];
-  const nS = STEPS.length;
-  const out = new Uint8Array(w * h);
-  const latMid = (tileYToLat(m.range.y0, m.range.z) + tileYToLat(m.range.y1 + 1, m.range.z)) / 2;
-  const mpp = metersPerPixel(m.range.z, latMid);
-
-  // Precompute integer offsets and 1/distance for every (direction, step)
+function ambientOcclusion(m: Float32Array, size: number, mpp: number, directions: number): Uint8Array {
+  const nS = AO_STEPS.length;
   const offX = new Int32Array(directions * nS);
   const offY = new Int32Array(directions * nS);
-  const invDist = new Float64Array(directions * nS);
+  const inv = new Float64Array(directions * nS);
   for (let d = 0; d < directions; d++) {
     const a = (2 * Math.PI * d) / directions;
     for (let k = 0; k < nS; k++) {
-      const ox = Math.round(Math.cos(a) * STEPS[k]);
-      const oy = Math.round(Math.sin(a) * STEPS[k]);
+      const ox = Math.round(Math.cos(a) * AO_STEPS[k]);
+      const oy = Math.round(Math.sin(a) * AO_STEPS[k]);
       offX[d * nS + k] = ox;
       offY[d * nS + k] = oy;
-      invDist[d * nS + k] = 1 / (Math.hypot(ox, oy) * mpp);
+      inv[d * nS + k] = 1 / (Math.hypot(ox, oy) * mpp);
     }
   }
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const h0 = data[y * w + x];
+  const out = new Uint8Array(TILE * TILE);
+  for (let py = 0; py < TILE; py++) {
+    for (let px = 0; px < TILE; px++) {
+      const x = px + TILE;
+      const y = py + TILE;
+      const h0 = m[y * size + x];
       let occ = 0;
       for (let d = 0; d < directions; d++) {
         let maxTan = 0;
         const base = d * nS;
         for (let k = 0; k < nS; k++) {
-          const xx = x + offX[base + k];
-          const yy = y + offY[base + k];
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) break;
-          const t = (data[yy * w + xx] - h0) * invDist[base + k];
+          const t = (m[(y + offY[base + k]) * size + x + offX[base + k]] - h0) * inv[base + k];
           if (t > maxTan) maxTan = t;
         }
-        occ += maxTan / Math.sqrt(1 + maxTan * maxTan); // sin(atan(t))
+        occ += maxTan / Math.sqrt(1 + maxTan * maxTan);
       }
-      out[y * w + x] = Math.min(255, Math.round((occ / directions) * 255));
+      out[py * TILE + px] = Math.min(255, Math.round((occ / directions) * 255));
     }
   }
   return out;
 }
 
-// --- Writing ---------------------------------------------------------------
-
-async function writeTiles(m: Mosaic, ao: Uint8Array) {
-  const { range, w } = m;
-  for (let ty = range.y0; ty <= range.y1; ty++)
-    for (let tx = range.x0; tx <= range.x1; tx++) {
-      const ox = (tx - range.x0) * TILE;
-      const oy = (ty - range.y0) * TILE;
-      const dem = new PNG({ width: TILE, height: TILE });
-      const aoPng = new PNG({ width: TILE, height: TILE });
-      for (let py = 0; py < TILE; py++)
-        for (let px = 0; px < TILE; px++) {
-          const src = (oy + py) * w + ox + px;
-          const i = (py * TILE + px) * 4;
-          // Terrarium: h = R·256 + G + B/256 − 32768
-          const v = Math.min(Math.max(m.data[src] + 32768, 0), 65535.99);
-          dem.data[i] = Math.floor(v / 256);
-          dem.data[i + 1] = Math.floor(v) % 256;
-          dem.data[i + 2] = Math.floor((v - Math.floor(v)) * 256);
-          dem.data[i + 3] = 255;
-          aoPng.data[i] = aoPng.data[i + 1] = aoPng.data[i + 2] = 0;
-          aoPng.data[i + 3] = ao[src];
-        }
-      for (const [kind, png, opts] of [
-        ['dem', dem, { colorType: 2 }],
-        ['ao', aoPng, { colorType: 6 }],
-      ] as const) {
-        const file = path.join(OUT, kind, `${range.z}`, `${tx}`, `${ty}.png`);
-        await mkdir(path.dirname(file), { recursive: true });
-        await writeFile(file, PNG.sync.write(png, opts));
-      }
+/** 3×3 mosaic of raw tiles around k (missing → NaN) */
+async function mosaic(k: Key): Promise<Float32Array> {
+  const [z, x, y] = unkey(k);
+  const size = 3 * TILE;
+  const m = new Float32Array(size * size).fill(NaN);
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++) {
+      const t = await readRaw(key(z, x + dx, y + dy));
+      if (!t) continue;
+      for (let py = 0; py < TILE; py++) m.set(t.subarray(py * TILE, (py + 1) * TILE), ((dy + 1) * TILE + py) * size + (dx + 1) * TILE);
     }
+  return m;
 }
 
-async function buildPyramid(name: string, top: Mosaic, minZ: number) {
-  let m = top;
-  for (;;) {
-    const t0 = Date.now();
-    const ao = ambientOcclusion(m, m.range.z >= 13 ? 8 : 16);
-    await writeTiles(m, ao);
-    log(`${name} z${m.range.z}: ${tileCount(m.range)} tiles (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
-    if (m.range.z <= minZ) break;
-    m = downsample(m);
-  }
+async function writeOutput(k: Key): Promise<void> {
+  const [z, , y] = unkey(k);
+  const size = 3 * TILE;
+  const m = await mosaic(k);
+  fillHoles(m, size, size);
+  const lat = tileYToLat(y + 0.5, z);
+  const ao = ambientOcclusion(m, size, metersPerPixel(z, lat), z >= 13 ? 8 : 16);
+
+  const dem = Buffer.alloc(TILE * TILE * 3);
+  const aoPx = Buffer.alloc(TILE * TILE * 4);
+  for (let py = 0; py < TILE; py++)
+    for (let px = 0; px < TILE; px++) {
+      const i = py * TILE + px;
+      const h = m[(py + TILE) * size + px + TILE];
+      // Terrarium: h = R·256 + G + B/256 − 32768, quantised to HEIGHT_STEP
+      const v = Math.min(Math.max(Math.round((h + 32768) / HEIGHT_STEP) * HEIGHT_STEP, 0), 65535.875);
+      dem[i * 3] = Math.floor(v / 256);
+      dem[i * 3 + 1] = Math.floor(v) % 256;
+      dem[i * 3 + 2] = Math.round((v - Math.floor(v)) * 256);
+      aoPx[i * 4 + 3] = ao[i]; // black, occlusion as alpha
+    }
+  const demFile = path.join(OUT, 'dem', `${k}.webp`);
+  const aoFile = path.join(OUT, 'ao', `${k}.webp`);
+  await mkdir(path.dirname(demFile), { recursive: true });
+  await mkdir(path.dirname(aoFile), { recursive: true });
+  await sharp(dem, { raw: { width: TILE, height: TILE, channels: 3 } }).webp({ lossless: true, effort: 4 }).toFile(demFile);
+  await sharp(aoPx, { raw: { width: TILE, height: TILE, channels: 4 } }).webp({ quality: 80, alphaQuality: 85 }).toFile(aoFile);
 }
 
-/** "z/x/y" keys of all PNG tiles below dir */
-async function listTiles(dir: string): Promise<string[]> {
-  const { readdir } = await import('node:fs/promises');
-  const keys: string[] = [];
+async function listTiles(dir: string): Promise<Key[]> {
+  const keys: Key[] = [];
   if (!existsSync(dir)) return keys;
   for (const z of await readdir(dir))
     for (const x of await readdir(path.join(dir, z)))
-      for (const f of await readdir(path.join(dir, z, x))) if (f.endsWith('.png')) keys.push(`${z}/${x}/${f.slice(0, -4)}`);
+      for (const f of await readdir(path.join(dir, z, x))) if (f.endsWith('.webp')) keys.push(`${z}/${x}/${f.slice(0, -5)}`);
   return keys.sort();
 }
 
 // --- Main -------------------------------------------------------------------
 
+interface Plan {
+  name: string;
+  bbox: readonly number[];
+  topZ: number;
+  minZ: number;
+}
+
 async function main() {
-  const onlyArg = process.argv.indexOf('--only');
-  const only = onlyArg >= 0 ? process.argv[onlyArg + 1] : null;
-  const plans = [
-    ...REGIONS.map((r) => ({ name: r.name, range: rangeFor(r.bbox, MAX_Z, REGION_MIN_Z), minZ: REGION_MIN_Z })),
-    { name: 'overview', range: rangeFor(OVERVIEW.bbox, OVERVIEW.z, OVERVIEW.minZ), minZ: OVERVIEW.minZ },
-  ].filter((p) => !only || p.name === only);
-  let total = 0;
-  for (const p of plans) {
-    total += tileCount(p.range);
-    log(`${p.name}: z${p.range.z} ${tileCount(p.range)} source tiles (${p.range.x1 - p.range.x0 + 1}x${p.range.y1 - p.range.y0 + 1}), pyramid down to z${p.minZ}`);
-  }
-  log(`total ${total} GSI tiles to fetch (cached ones are skipped; ~${Math.ceil(total / REQUESTS_PER_SECOND / 60)} min uncached)`);
+  const plans: Plan[] = [
+    ...REGIONS.map((r) => ({ name: r.name, bbox: r.bbox, topZ: TOP_Z, minZ: REGION_MIN_Z })),
+    { name: 'overview', bbox: OVERVIEW.bbox, topZ: OVERVIEW.z, minZ: OVERVIEW.minZ },
+  ].filter((p) => !ONLY || p.name === ONLY);
+  if (!plans.length) throw new Error(`unknown region ${ONLY}`);
+
+  const kiban = await KibanSource.open(KIBAN_SRC, KIBAN_CACHE);
+  const kb = kiban.bbox();
+  log(`dem-src: ${kiban.count} blocks${kb ? ` covering ${kb.map((v) => v.toFixed(3)).join(', ')}` : ''}`);
+  for (const p of plans) log(`${p.name}: ${tilesIn(p.bbox, p.topZ).length} tiles at z${p.topZ}, pyramid to z${p.minZ}`);
   if (DRY) return;
 
+  const touched = new Set<Key>();
   for (const p of plans) {
-    log(`${p.name}: downloading...`);
-    const m = await downloadMosaic(p.range);
-    fillHoles(m.data, m.w, m.h);
-    await buildPyramid(p.name, m, p.minZ);
+    const t0 = Date.now();
+    let level = new Set<Key>();
+    for (const k of tilesIn(p.bbox, p.topZ)) if (await buildTopRaw(k, kiban)) level.add(k);
+    log(`${p.name} z${p.topZ}: ${level.size} raw tiles (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+    kiban.release();
+    level.forEach((k) => touched.add(k));
+    for (let z = p.topZ - 1; z >= p.minZ; z--) {
+      const parents = new Set([...level].map((k) => {
+        const [, x, y] = unkey(k);
+        return key(z, x >> 1, y >> 1);
+      }));
+      level = new Set();
+      for (const k of parents) if (await buildParentRaw(k)) level.add(k);
+      level.forEach((k) => touched.add(k));
+    }
   }
 
-  // Index = everything on disk (also tiles from earlier runs)
+  log(`writing ${touched.size} tiles (fill + AO + WebP)...`);
+  const t0 = Date.now();
+  let n = 0;
+  for (const k of touched) {
+    // Resumable: skip tiles already written by an interrupted run (use --force to redo)
+    const done = existsSync(path.join(OUT, 'dem', `${k}.webp`)) && existsSync(path.join(OUT, 'ao', `${k}.webp`));
+    if (FORCE || !done) await writeOutput(k);
+    if (++n % 250 === 0) log(`  ${n}/${touched.size} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  }
+
   const index = {
-    version: 1,
-    attribution: '国土地理院 標高タイル（DEM10B）を加工して作成',
-    maxzoom: MAX_Z,
+    version: 2,
+    format: 'webp',
+    attribution: '国土地理院 標高タイル・基盤地図情報 数値標高モデルを加工して作成',
+    maxzoom: TOP_Z,
     dem: await listTiles(path.join(OUT, 'dem')),
     ao: await listTiles(path.join(OUT, 'ao')),
   };
   await writeFile(path.join(OUT, 'index.json'), JSON.stringify(index));
-  log(`done: ${index.dem.length} DEM + ${index.ao.length} AO tiles in ${path.relative(ROOT, OUT)}`);
+  log(`done: ${index.dem.length} tiles in ${path.relative(ROOT, OUT)} (${((Date.now() - t0) / 1000).toFixed(0)} s output)`);
+
+  // Old PNG output from the first pipeline version (now superseded)
+  const legacy = path.join(ROOT, 'public', 'terrain');
+  if (existsSync(legacy)) {
+    await rm(legacy, { recursive: true, force: true });
+    log('removed legacy public/terrain');
+  }
 }
 
 main().catch((e) => {

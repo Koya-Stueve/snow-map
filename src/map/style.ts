@@ -7,13 +7,41 @@ export const OPENFREEMAP_TILEJSON = 'https://tiles.openfreemap.org/planet';
 export const GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
 
 export const DEM_SOURCE_ID = 'dem';
+/** Separate DEM source for the 3D mesh (MapLibre recommends not sharing it with hillshade) */
+export const TERRAIN_SOURCE_ID = 'dem-terrain';
+export const DEFAULT_EXAGGERATION = 1.4;
 
-export function buildStyle(theme: ThemeName): StyleSpecification {
+export interface StyleOptions {
+  /** 3D terrain on/off */
+  terrain: boolean;
+  exaggeration?: number;
+}
+
+export function buildStyle(theme: ThemeName, opts: StyleOptions = { terrain: false }): StyleSpecification {
   const p = MAP_PALETTES[theme];
   return {
     version: 8,
     glyphs: GLYPHS,
+    ...(opts.terrain
+      ? { terrain: { source: TERRAIN_SOURCE_ID, exaggeration: opts.exaggeration ?? DEFAULT_EXAGGERATION } }
+      : {}),
+    sky: {
+      'sky-color': p.sky.sky,
+      'horizon-color': p.sky.horizon,
+      'fog-color': p.sky.fog,
+      'sky-horizon-blend': 0.6,
+      'horizon-fog-blend': 0.6,
+      'fog-ground-blend': 0.75,
+      'atmosphere-blend': 0,
+    },
     sources: {
+      [TERRAIN_SOURCE_ID]: {
+        type: 'raster-dem',
+        tiles: [DEM_TILES],
+        encoding: 'terrarium',
+        tileSize: 256,
+        maxzoom: 14,
+      },
       // GSI-derived local tiles where built, Mapzen/AWS elsewhere (see terrainSource.ts)
       [DEM_SOURCE_ID]: {
         type: 'raster-dem',

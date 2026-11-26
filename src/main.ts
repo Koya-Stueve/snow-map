@@ -8,7 +8,8 @@ import '@fontsource/jetbrains-mono/700.css';
 import '@fontsource/oswald/600.css';
 import './styles.css';
 
-import { buildStyle, WEATHER_INSERT_BEFORE } from './map/style';
+import { buildStyle, DEFAULT_EXAGGERATION, TERRAIN_SOURCE_ID, WEATHER_INSERT_BEFORE } from './map/style';
+import { CAMERA_PRESETS } from './map/cameras';
 import { loadTerrainIndex, registerTerrainProtocols } from './map/terrainSource';
 import { RasterOverlay } from './map/rasterOverlay';
 import { ScalarCanvas } from './render/scalarCanvas';
@@ -43,22 +44,63 @@ const terrainIndex = await loadTerrainIndex();
 let theme: ThemeName = loadTheme();
 document.documentElement.dataset.theme = theme;
 
+const TERRAIN_KEY = 'snowmap.terrain3d';
+let terrain3d = (() => {
+  try {
+    return localStorage.getItem(TERRAIN_KEY) !== '0'; // 3D is the default
+  } catch {
+    return true;
+  }
+})();
+const styleFor = () => buildStyle(theme, { terrain: terrain3d });
+
 const map = new maplibregl.Map({
   container: 'map',
-  style: buildStyle(theme),
+  style: styleFor(),
   bounds: HOKKAIDO_BOUNDS,
   fitBoundsOptions: { padding: { top: 120, bottom: 140, left: 16, right: 16 } },
+  pitch: terrain3d ? 45 : 0,
   minZoom: 4,
   maxZoom: 15,
+  maxPitch: 85,
   maxBounds: JAPAN_BOUNDS,
   attributionControl: false,
   // Needed later to grab frames for video export
   canvasContextAttributes: { preserveDrawingBuffer: true },
 });
 
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), 'top-right');
 // No MapLibre attribution control: all required credits (with links) are in our
 // own always-visible source line, which also ends up in exported videos.
+
+// --- 2D/3D toggle + camera presets ---
+const terrainBtn = document.getElementById('terrain-toggle') as HTMLButtonElement;
+const syncTerrainBtn = () => {
+  terrainBtn.setAttribute('aria-pressed', String(terrain3d));
+  terrainBtn.classList.toggle('active', terrain3d);
+};
+syncTerrainBtn();
+terrainBtn.addEventListener('click', () => {
+  terrain3d = !terrain3d;
+  try {
+    localStorage.setItem(TERRAIN_KEY, terrain3d ? '1' : '0');
+  } catch {
+    /* storage unavailable */
+  }
+  syncTerrainBtn();
+  map.setTerrain(terrain3d ? { source: TERRAIN_SOURCE_ID, exaggeration: DEFAULT_EXAGGERATION } : null);
+  map.easeTo({ pitch: terrain3d ? 55 : 0, bearing: terrain3d ? map.getBearing() : 0, duration: 800 });
+});
+
+const cameraSelect = document.getElementById('camera-select') as HTMLSelectElement;
+cameraSelect.innerHTML =
+  '<option value="">Region …</option>' + CAMERA_PRESETS.map((c) => `<option value="${c.id}">${c.label}</option>`).join('');
+cameraSelect.addEventListener('change', () => {
+  const c = CAMERA_PRESETS.find((p) => p.id === cameraSelect.value);
+  if (!c) return;
+  map.flyTo({ center: c.center, zoom: c.zoom, pitch: terrain3d ? c.pitch : 0, bearing: terrain3d ? c.bearing : 0, duration: 2500, essential: true });
+  cameraSelect.value = '';
+});
 
 // --- Data + layer: fetched forecast, or synthetic sample data as fallback ---
 const { dataset, fallbackReason } = await loadDataset();
@@ -82,7 +124,7 @@ document.getElementById('theme-toggle')!.addEventListener('click', () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   saveTheme(theme);
   document.documentElement.dataset.theme = theme;
-  map.setStyle(buildStyle(theme));
+  map.setStyle(styleFor());
   renderAt(time.state); // new palette; overlay re-adds itself on style.load
 });
 

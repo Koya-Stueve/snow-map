@@ -1,6 +1,6 @@
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Resort } from '../data/resorts';
-import { layoutLabels, type LabelInput } from '../render/labelLayout';
+import { layoutLabels, type LabelInput, type Rect } from '../render/labelLayout';
 import { snowColor, type ColorStop } from '../render/colorScale';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -91,6 +91,16 @@ export class ResortLabels {
     });
   }
 
+  /** Screen rects of UI elements labels must not cover (relative to the map container) */
+  private obstacles(): Rect[] {
+    const base = this.map.getContainer().getBoundingClientRect();
+    const sel = '.hud-top > *, .hud-controls > *, .timeline, .source-line, .maplibregl-ctrl-top-right .maplibregl-ctrl';
+    return [...document.querySelectorAll<HTMLElement>(sel)]
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height }));
+  }
+
   private update(): void {
     const { clientWidth: width, clientHeight: height } = this.map.getContainer();
     const inputs: LabelInput[] = this.resorts.map((r) => {
@@ -107,7 +117,7 @@ export class ResortLabels {
       };
     });
 
-    for (const g of layoutLabels(inputs, { width, height })) {
+    for (const g of layoutLabels(inputs, { width, height }, { obstacles: this.obstacles() })) {
       const it = this.items.get(g.id)!;
       const display = g.visible ? '' : 'none';
       it.box.style.display = display;

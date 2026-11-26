@@ -27,23 +27,27 @@ page.on('console', (m) => {
 });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 
-await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-await page.waitForFunction(() => window.snowMap && window.snowMap.loaded(), { timeout: 60000 }).catch(() => {
-  console.log('[warn] map did not report loaded within timeout');
-});
-await page.evaluate(() => new Promise((r) => (window.snowMap.areTilesLoaded() ? r() : window.snowMap.once('idle', r))));
+// Don't wait for network idle: map tiles keep streaming (slow on mobile hotspots)
+await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+await page.waitForFunction(() => window.snowMap && window.snowApp, { timeout: 120000 });
+const settle = (ms) =>
+  page.evaluate(
+    (ms) =>
+      new Promise((r) => {
+        if (window.snowMap.loaded() && window.snowMap.areTilesLoaded()) return r(true);
+        window.snowMap.once('idle', () => r(true));
+        setTimeout(() => r(false), ms);
+      }),
+    ms,
+  );
+if (!(await settle(120000))) console.log('[warn] map not idle after 120 s – screenshot anyway');
 if (process.env.EVAL) {
   console.log(await page.evaluate(process.env.EVAL));
-  // Let the map settle after whatever EVAL changed (bounded wait)
-  await page.evaluate(
-    () =>
-      new Promise((r) => {
-        const done = () => setTimeout(r, 300);
-        window.snowMap.once('idle', done);
-        window.snowMap.triggerRepaint();
-        setTimeout(r, 5000);
-      }),
-  );
+  // Let the map settle after whatever EVAL changed (camera moves load new tiles)
+  await page.evaluate(() => window.snowMap.triggerRepaint());
+  await new Promise((r) => setTimeout(r, 500));
+  if (!(await settle(Number(process.env.SETTLE_MS ?? 90000)))) console.log('[warn] map not idle after EVAL – screenshot anyway');
+  await new Promise((r) => setTimeout(r, 300));
 }
 await page.screenshot({ path: out });
 console.log('saved', out);

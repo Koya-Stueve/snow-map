@@ -18,6 +18,8 @@ export interface MapPalette {
   snowShadeExaggeration: number;
   /** Strength of the precomputed ambient-occlusion layer */
   aoOpacity: number;
+  /** Sky + distance fog for tilted 3D views */
+  sky: { sky: string; horizon: string; fog: string };
 }
 
 export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
@@ -35,6 +37,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     snowShadeColor: '#0b1430',
     snowShadeExaggeration: 0.55,
     aoOpacity: 0.85,
+    sky: { sky: '#050914', horizon: '#22345c', fog: '#0c1529' },
   },
   // Inspired by the light grey relief + colored snow look (Inspo images)
   light: {
@@ -50,6 +53,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     snowShadeColor: '#5a6470',
     snowShadeExaggeration: 0.4,
     aoOpacity: 0.6,
+    sky: { sky: '#9ec3e6', horizon: '#eef3f7', fog: '#e6ecf1' },
   },
 };
 

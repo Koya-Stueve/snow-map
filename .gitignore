@@ -10,3 +10,7 @@ inspo/
 .cache/
 public/data/
 public/terrain/
+/terrain/
+
+# Downloaded source DEMs (GSI Kiban Chizu Joho etc.)
+dem-src/

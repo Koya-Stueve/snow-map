@@ -21,6 +21,7 @@ export const RESORTS: Resort[] = [
   { id: 'kamui', name: 'Kamui', region: 'hokkaido', lon: 142.214, lat: 43.786, baseM: 160, topM: 750, label: { dx: -36, dy: -30 } },
   { id: 'asahidake', name: 'Asahidake', region: 'hokkaido', lon: 142.827, lat: 43.656, baseM: 1100, topM: 1600, label: { dx: 36, dy: -26 } },
   { id: 'furano', name: 'Furano', region: 'hokkaido', lon: 142.343, lat: 43.322, baseM: 245, topM: 1209, label: { dx: -36, dy: 30 } },
+  { id: 'tomamu', name: 'Tomamu', region: 'hokkaido', lon: 142.628, lat: 43.068, baseM: 540, topM: 1239, label: { dx: 36, dy: 26 } },
   // Tohoku
   { id: 'zao', name: 'Zao', region: 'tohoku', lon: 140.405, lat: 38.168, baseM: 780, topM: 1661, label: { dx: 36, dy: 0 } },
   // Nagano / Niigata
