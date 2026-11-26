@@ -25,6 +25,7 @@ in vec2 a_half;              // mercator half size
 in vec3 a_z;                 // ground (m), groundMin (m), mercator units per metre
 in float a_height;           // column height (m)
 out float v_rel;             // height above ground (m, unexaggerated)
+out float v_height;          // full column height (m)
 out vec3 v_normal;
 void main() {
   if (a_height < 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
@@ -33,6 +34,7 @@ void main() {
   float top = ground + a_height * u_heightExag;
   float zm = a_corner.z > 0.5 ? top : bottom;
   v_rel = a_corner.z > 0.5 ? a_height : (a_z.y - a_z.x);
+  v_height = a_height;
   v_normal = a_normal;
   gl_Position = u_matrix * vec4(a_center + a_corner.xy * 2.0 * a_half, zm * a_z.z, 1.0);
 }`;
@@ -46,7 +48,9 @@ uniform float u_ref;
 uniform float u_alphaLow;   // opacity at the ground (dark, low part of a column)
 uniform float u_opaqueAt;   // relative height (0..1) from which columns are fully opaque
 uniform int u_pass;         // 0 = opaque fragments only, 1 = translucent fragments only
+uniform float u_baseFade;   // m over which the foot fades into the terrain (0 = hard base)
 in float v_rel;
+in float v_height;
 in vec3 v_normal;
 out vec4 fragColor;
 void main() {
@@ -54,6 +58,8 @@ void main() {
   vec3 c = t < 0.5 ? mix(u_low, u_mid, smoothstep(0.0, 1.0, t / 0.5)) : mix(u_mid, u_high, smoothstep(0.0, 1.0, (t - 0.5) / 0.5));
   // Glass-like low parts: opacity grows with height, tall columns stay solid
   float a = mix(u_alphaLow, 1.0, smoothstep(0.0, u_opaqueAt, t));
+  // Soft foot: the column emerges from the relief (fade length capped for short columns)
+  if (u_baseFade > 0.0) a *= smoothstep(0.0, min(u_baseFade, 0.7 * v_height), v_rel);
   bool opaque = a > 0.995;
   if ((u_pass == 0) != opaque) discard;
   // simple light from the north-west + sky
@@ -103,8 +109,10 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
   heightExaggeration = 1;
   /** Debug: number of draw calls so far */
   renders = 0;
-  /** Opacity at the ground; 1 = solid columns */
-  alphaLow = 0.22;
+  /** Opacity at the ground; 1 = solid columns (glass look was tried and dropped) */
+  alphaLow = 1;
+  /** Fade the foot into the terrain over this many metres (0 = hard base) */
+  baseFade = 0;
   /** Relative colour height (0..1) from which a column is fully opaque */
   opaqueAt = 0.6;
 
@@ -138,7 +146,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) ?? 'link error');
     this.program = p;
-    for (const u of ['u_matrix', 'u_exag', 'u_heightExag', 'u_low', 'u_mid', 'u_high', 'u_ref', 'u_alphaLow', 'u_opaqueAt', 'u_pass'])
+    for (const u of ['u_matrix', 'u_exag', 'u_heightExag', 'u_low', 'u_mid', 'u_high', 'u_ref', 'u_alphaLow', 'u_opaqueAt', 'u_pass', 'u_baseFade'])
       this.uniforms[u] = gl.getUniformLocation(p, u);
 
     const g = this.grid;
@@ -205,6 +213,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     gl.uniform1f(this.uniforms.u_ref, s.colorRefMeters);
     gl.uniform1f(this.uniforms.u_alphaLow, this.alphaLow);
     gl.uniform1f(this.uniforms.u_opaqueAt, this.opaqueAt);
+    gl.uniform1f(this.uniforms.u_baseFade, this.baseFade);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     // Mercator y points south, which mirrors the box: its outward faces wind clockwise
@@ -220,7 +229,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
 
     // Pass 2: translucent parts, blended over terrain + solid parts, no depth writes
     // (so overlapping glass doesn't punch holes; order artefacts stay subtle at low alpha)
-    if (this.alphaLow < 0.995) {
+    if (this.alphaLow < 0.995 || this.baseFade > 0) {
       gl.uniform1i(this.uniforms.u_pass, 1);
       gl.depthMask(false);
       gl.enable(gl.BLEND);

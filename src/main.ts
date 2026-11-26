@@ -223,12 +223,31 @@ columnsBtn.addEventListener('click', () => {
   renderAt(time.state);
 });
 
+/**
+ * Column look options (also tweakable at runtime via snowApp.columnOpts):
+ * - threshold: columns only above this fraction of the colour range (0.075 ≈ 3 cm of 40)
+ * - density: number of columns grows with the amount (full density at `densityFull`)
+ * - baseFade: metres over which the column foot fades into the terrain
+ */
+const columnOpts = { threshold: 0.075, density: false, densityFull: 0.5, baseFade: 0 };
+
 /** Column scaling per layer/mode: metres per unit, unit value where the colour turns pink, legend ticks */
 function columnSpec(vt: ViewTime) {
-  if (layer.id === 'snow_depth') return { mPerUnit: COLUMN_M_PER_CM / 5, colorRef: 200, ticks: [0, 50, 100, 200], minValue: 2 };
-  if (vt.mode === 'hourly') return { mPerUnit: COLUMN_M_PER_CM * 10, colorRef: 4, ticks: [0, 1, 2, 4], minValue: 0.1 };
-  return { mPerUnit: COLUMN_M_PER_CM, colorRef: COLUMN_COLOR_REF_CM, ticks: [0, 10, 20, 40], minValue: COLUMN_MIN_CM };
+  const base =
+    layer.id === 'snow_depth'
+      ? { mPerUnit: COLUMN_M_PER_CM / 5, colorRef: 200, ticks: [0, 50, 100, 200] }
+      : vt.mode === 'hourly'
+        ? { mPerUnit: COLUMN_M_PER_CM * 10, colorRef: 4, ticks: [0, 1, 2, 4] }
+        : { mPerUnit: COLUMN_M_PER_CM, colorRef: COLUMN_COLOR_REF_CM, ticks: [0, 10, 20, 40] };
+  return { ...base, minValue: Math.max(COLUMN_MIN_CM * (base.colorRef / COLUMN_COLOR_REF_CM), columnOpts.threshold * base.colorRef) };
 }
+
+/** Fixed per-column random value in [0,1) (stable over time → no flicker in videos) */
+const columnHash = (i: number) => {
+  let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
 
 /** Column heights (m) for the state: bilinear model value × elevation factor (if refined) */
 const columnHeights = (vt: ViewTime, spec: ReturnType<typeof columnSpec>): Float32Array => {
@@ -245,7 +264,10 @@ const columnHeights = (vt: ViewTime, spec: ReturnType<typeof columnSpec>): Float
       (f[k] * (1 - tx) + f[k + 1] * tx) * (1 - ty) + (f[k + nx] * (1 - tx) + f[k + nx + 1] * tx) * ty;
     let v = bil(denseSnow);
     if (refined && denseHref && v > 0) v *= Math.min(ELEV_FACTOR_MAX, Math.max(ELEV_FACTOR_MIN, 1 + ELEV_GAIN_PER_M * (g.ground[i] - bil(denseHref))));
-    out[i] = v >= spec.minValue ? v * spec.mPerUnit : 0;
+    if (v < spec.minValue) continue;
+    // density mode: a column appears once the amount passes its own random share
+    if (columnOpts.density && columnHash(i) > Math.min(1, v / (columnOpts.densityFull * spec.colorRef))) continue;
+    out[i] = v * spec.mPerUnit;
   }
   return out;
 };
@@ -328,6 +350,7 @@ function renderAt(vt: ViewTime) {
   if (columns) {
     const spec = columnSpec(vt);
     columns.visible = columnsMode;
+    columns.baseFade = columnOpts.baseFade;
     columns.style = { ...MAP_PALETTES[theme].columns, colorRefMeters: spec.colorRef * spec.mPerUnit };
     if (columnsMode) columns.setHeights(columnHeights(vt, spec));
   }
@@ -385,6 +408,7 @@ Object.assign(window, { snowMap: map, snowApp: {
     get columns() {
       return columns;
     },
+    columnOpts,
     lutFor,
   },
 });
