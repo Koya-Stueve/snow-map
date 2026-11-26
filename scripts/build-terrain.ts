@@ -4,7 +4,9 @@
 //
 //   npm run build-terrain                       all regions + Japan overview
 //   npm run build-terrain -- --only tomamu      one region
-//   npm run build-terrain -- --force            recompute raw tiles (e.g. new dem-src data)
+//   npm run build-terrain -- --force            recompute raw tiles + outputs (e.g. new dem-src data)
+//   npm run build-terrain -- --rewrite          recompute outputs only (AO/encoding changes)
+//   npm run build-terrain -- --workers 4        output threads (default: all logical cores)
 //   npm run build-terrain -- --dry-run          only print tile counts
 //
 // Sources, best first:
@@ -21,10 +23,12 @@
 
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { PNG } from 'pngjs';
-import sharp from 'sharp';
 import { KibanSource } from './terrain/kiban.ts';
+import { key, outputFiles, readRaw as readRawIn, TILE, tileYToLat, unkey, type Key } from './terrain/output.ts';
 
 // --- Configuration ---------------------------------------------------------
 
@@ -40,8 +44,6 @@ const OVERVIEW = { bbox: [128.0, 30.0, 146.0, 46.0], z: 9, minZ: 6 } as const;
 const GSI_URL = (z: number, x: number, y: number) => `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${z}/${x}/${y}.png`;
 const REQUESTS_PER_SECOND = 5;
 const USER_AGENT = 'snow-map/0.1 (local terrain preprocessing test)';
-/** Terrarium precision kept in the output (1/8 m) – smaller files, invisible difference */
-const HEIGHT_STEP = 1 / 8;
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const GSI_CACHE = path.join(ROOT, '.cache', 'gsi');
@@ -49,12 +51,13 @@ const RAW = path.join(ROOT, '.cache', 'terrain-raw');
 const KIBAN_SRC = path.join(ROOT, 'dem-src');
 const KIBAN_CACHE = path.join(ROOT, '.cache', 'kiban');
 const OUT = path.join(ROOT, 'terrain');
-const TILE = 256;
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
 const FORCE = args.includes('--force');
+const REWRITE = FORCE || args.includes('--rewrite');
 const ONLY = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
+const WORKERS = args.includes('--workers') ? Math.max(1, Number(args[args.indexOf('--workers') + 1])) : availableParallelism();
 
 const log = (...a: unknown[]) => console.log('[terrain]', ...a);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,12 +70,6 @@ const latToTileY = (lat: number, z: number) => {
   return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z);
 };
 const tileXToLon = (x: number, z: number) => (x / 2 ** z) * 360 - 180;
-const tileYToLat = (y: number, z: number) => (180 / Math.PI) * Math.atan(Math.sinh(Math.PI - (2 * Math.PI * y) / 2 ** z));
-const metersPerPixel = (z: number, lat: number) => (40075016.686 * Math.cos((lat * Math.PI) / 180)) / (TILE * 2 ** z);
-
-type Key = string; // "z/x/y"
-const key = (z: number, x: number, y: number): Key => `${z}/${x}/${y}`;
-const unkey = (k: Key) => k.split('/').map(Number) as [number, number, number];
 
 function tilesIn(bbox: readonly number[], z: number): Key[] {
   const [w, s, e, n] = bbox;
@@ -137,12 +134,7 @@ async function gsiRaw(z: number, x: number, y: number): Promise<Float32Array> {
 // --- Raw tile store (float32) ---------------------------------------------------
 
 const rawFile = (k: Key) => path.join(RAW, `${k}.f32`);
-async function readRaw(k: Key): Promise<Float32Array | null> {
-  const f = rawFile(k);
-  if (!existsSync(f)) return null;
-  const b = await readFile(f);
-  return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4).slice();
-}
+const readRaw = (k: Key) => readRawIn(RAW, k);
 async function writeRaw(k: Key, data: Float32Array) {
   const f = rawFile(k);
   await mkdir(path.dirname(f), { recursive: true });
@@ -205,141 +197,6 @@ async function buildParentRaw(k: Key): Promise<boolean> {
   return true;
 }
 
-// --- Raster ops ------------------------------------------------------------
-
-/** Fill NaN holes from surrounding values with a push-pull pyramid (lakes keep shore height). */
-function fillHoles(data: Float32Array, w: number, h: number): void {
-  if (!data.some((v) => Number.isNaN(v))) return;
-  if (w <= 1 && h <= 1) {
-    if (Number.isNaN(data[0])) data[0] = 0;
-    return;
-  }
-  const cw = Math.ceil(w / 2);
-  const ch = Math.ceil(h / 2);
-  const coarse = new Float32Array(cw * ch);
-  for (let y = 0; y < ch; y++)
-    for (let x = 0; x < cw; x++) {
-      let s = 0;
-      let n = 0;
-      for (let d = 0; d < 4; d++) {
-        const xx = 2 * x + (d & 1);
-        const yy = 2 * y + (d >> 1);
-        if (xx < w && yy < h) {
-          const v = data[yy * w + xx];
-          if (!Number.isNaN(v)) {
-            s += v;
-            n++;
-          }
-        }
-      }
-      coarse[y * cw + x] = n ? s / n : NaN;
-    }
-  fillHoles(coarse, cw, ch);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (!Number.isNaN(data[i])) continue;
-      const fx = Math.min(Math.max((x - 0.5) / 2, 0), cw - 1);
-      const fy = Math.min(Math.max((y - 0.5) / 2, 0), ch - 1);
-      const x0 = Math.floor(fx);
-      const y0 = Math.floor(fy);
-      const x1 = Math.min(x0 + 1, cw - 1);
-      const y1 = Math.min(y0 + 1, ch - 1);
-      const tx = fx - x0;
-      const ty = fy - y0;
-      data[i] =
-        (coarse[y0 * cw + x0] * (1 - tx) + coarse[y0 * cw + x1] * tx) * (1 - ty) +
-        (coarse[y1 * cw + x0] * (1 - tx) + coarse[y1 * cw + x1] * tx) * ty;
-    }
-}
-
-const AO_STEPS = [1, 2, 3, 5, 8, 12, 18, 27, 40, 60];
-
-/**
- * Sky-view factor ambient occlusion for the centre tile of a 3×3 mosaic:
- * per direction, march outwards and keep the steepest horizon; occlusion is the
- * mean sine of those angles (0 = open sky, 1 = enclosed).
- */
-function ambientOcclusion(m: Float32Array, size: number, mpp: number, directions: number): Uint8Array {
-  const nS = AO_STEPS.length;
-  const offX = new Int32Array(directions * nS);
-  const offY = new Int32Array(directions * nS);
-  const inv = new Float64Array(directions * nS);
-  for (let d = 0; d < directions; d++) {
-    const a = (2 * Math.PI * d) / directions;
-    for (let k = 0; k < nS; k++) {
-      const ox = Math.round(Math.cos(a) * AO_STEPS[k]);
-      const oy = Math.round(Math.sin(a) * AO_STEPS[k]);
-      offX[d * nS + k] = ox;
-      offY[d * nS + k] = oy;
-      inv[d * nS + k] = 1 / (Math.hypot(ox, oy) * mpp);
-    }
-  }
-  const out = new Uint8Array(TILE * TILE);
-  for (let py = 0; py < TILE; py++) {
-    for (let px = 0; px < TILE; px++) {
-      const x = px + TILE;
-      const y = py + TILE;
-      const h0 = m[y * size + x];
-      let occ = 0;
-      for (let d = 0; d < directions; d++) {
-        let maxTan = 0;
-        const base = d * nS;
-        for (let k = 0; k < nS; k++) {
-          const t = (m[(y + offY[base + k]) * size + x + offX[base + k]] - h0) * inv[base + k];
-          if (t > maxTan) maxTan = t;
-        }
-        occ += maxTan / Math.sqrt(1 + maxTan * maxTan);
-      }
-      out[py * TILE + px] = Math.min(255, Math.round((occ / directions) * 255));
-    }
-  }
-  return out;
-}
-
-/** 3×3 mosaic of raw tiles around k (missing → NaN) */
-async function mosaic(k: Key): Promise<Float32Array> {
-  const [z, x, y] = unkey(k);
-  const size = 3 * TILE;
-  const m = new Float32Array(size * size).fill(NaN);
-  for (let dy = -1; dy <= 1; dy++)
-    for (let dx = -1; dx <= 1; dx++) {
-      const t = await readRaw(key(z, x + dx, y + dy));
-      if (!t) continue;
-      for (let py = 0; py < TILE; py++) m.set(t.subarray(py * TILE, (py + 1) * TILE), ((dy + 1) * TILE + py) * size + (dx + 1) * TILE);
-    }
-  return m;
-}
-
-async function writeOutput(k: Key): Promise<void> {
-  const [z, , y] = unkey(k);
-  const size = 3 * TILE;
-  const m = await mosaic(k);
-  fillHoles(m, size, size);
-  const lat = tileYToLat(y + 0.5, z);
-  const ao = ambientOcclusion(m, size, metersPerPixel(z, lat), z >= 13 ? 8 : 16);
-
-  const dem = Buffer.alloc(TILE * TILE * 3);
-  const aoPx = Buffer.alloc(TILE * TILE * 4);
-  for (let py = 0; py < TILE; py++)
-    for (let px = 0; px < TILE; px++) {
-      const i = py * TILE + px;
-      const h = m[(py + TILE) * size + px + TILE];
-      // Terrarium: h = R·256 + G + B/256 − 32768, quantised to HEIGHT_STEP
-      const v = Math.min(Math.max(Math.round((h + 32768) / HEIGHT_STEP) * HEIGHT_STEP, 0), 65535.875);
-      dem[i * 3] = Math.floor(v / 256);
-      dem[i * 3 + 1] = Math.floor(v) % 256;
-      dem[i * 3 + 2] = Math.round((v - Math.floor(v)) * 256);
-      aoPx[i * 4 + 3] = ao[i]; // black, occlusion as alpha
-    }
-  const demFile = path.join(OUT, 'dem', `${k}.webp`);
-  const aoFile = path.join(OUT, 'ao', `${k}.webp`);
-  await mkdir(path.dirname(demFile), { recursive: true });
-  await mkdir(path.dirname(aoFile), { recursive: true });
-  await sharp(dem, { raw: { width: TILE, height: TILE, channels: 3 } }).webp({ lossless: true, effort: 4 }).toFile(demFile);
-  await sharp(aoPx, { raw: { width: TILE, height: TILE, channels: 4 } }).webp({ quality: 80, alphaQuality: 85 }).toFile(aoFile);
-}
-
 async function listTiles(dir: string): Promise<Key[]> {
   const keys: Key[] = [];
   if (!existsSync(dir)) return keys;
@@ -347,6 +204,47 @@ async function listTiles(dir: string): Promise<Key[]> {
     for (const x of await readdir(path.join(dir, z)))
       for (const f of await readdir(path.join(dir, z, x))) if (f.endsWith('.webp')) keys.push(`${z}/${x}/${f.slice(0, -5)}`);
   return keys.sort();
+}
+
+// --- Parallel output stage ----------------------------------------------------
+
+/** Distribute output tiles over worker threads (each does fill + AO + WebP for one tile at a time). */
+async function runOutputPool(keys: Key[]): Promise<void> {
+  if (!keys.length) return;
+  const queue = [...keys];
+  const total = keys.length;
+  const t0 = Date.now();
+  let done = 0;
+  const n = Math.min(WORKERS, total);
+  const workerUrl = new URL('./terrain/outputWorker.ts', import.meta.url);
+
+  await new Promise<void>((resolve, reject) => {
+    let alive = n;
+    for (let i = 0; i < n; i++) {
+      const w = new Worker(workerUrl, { workerData: { raw: RAW, out: OUT } });
+      const next = () => {
+        const k = queue.shift();
+        if (k) w.postMessage(k);
+        else void w.terminate();
+      };
+      w.on('message', (msg: { done?: Key; error?: Key; message?: string }) => {
+        if (msg.error) {
+          reject(new Error(`tile ${msg.error}: ${msg.message}`));
+          return;
+        }
+        if (++done % 250 === 0 || done === total) {
+          const s = (Date.now() - t0) / 1000;
+          log(`  ${done}/${total} (${s.toFixed(0)} s, ~${((s / done) * (total - done)).toFixed(0)} s left)`);
+        }
+        next();
+      });
+      w.on('error', reject);
+      w.on('exit', () => {
+        if (--alive === 0) resolve();
+      });
+      next();
+    }
+  });
 }
 
 // --- Main -------------------------------------------------------------------
@@ -390,15 +288,14 @@ async function main() {
     }
   }
 
-  log(`writing ${touched.size} tiles (fill + AO + WebP)...`);
+  // Resumable: skip tiles already written by an interrupted run (--rewrite/--force redo them)
+  const todo = [...touched].filter((k) => {
+    const f = outputFiles(OUT, k);
+    return REWRITE || !(existsSync(f.dem) && existsSync(f.ao));
+  });
   const t0 = Date.now();
-  let n = 0;
-  for (const k of touched) {
-    // Resumable: skip tiles already written by an interrupted run (use --force to redo)
-    const done = existsSync(path.join(OUT, 'dem', `${k}.webp`)) && existsSync(path.join(OUT, 'ao', `${k}.webp`));
-    if (FORCE || !done) await writeOutput(k);
-    if (++n % 250 === 0) log(`  ${n}/${touched.size} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
-  }
+  log(`writing ${todo.length} of ${touched.size} tiles (fill + AO + WebP) on ${WORKERS} threads...`);
+  await runOutputPool(todo);
 
   const index = {
     version: 2,
