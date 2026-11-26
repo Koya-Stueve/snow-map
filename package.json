@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "fetch": "node scripts/fetch-forecast.ts"
+    "fetch": "node scripts/fetch-forecast.ts",
+    "build-terrain": "node scripts/build-terrain.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",

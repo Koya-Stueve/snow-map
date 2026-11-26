@@ -9,6 +9,7 @@ import '@fontsource/oswald/600.css';
 import './styles.css';
 
 import { buildStyle, WEATHER_INSERT_BEFORE } from './map/style';
+import { loadTerrainIndex, registerTerrainProtocols } from './map/terrainSource';
 import { RasterOverlay } from './map/rasterOverlay';
 import { ScalarCanvas } from './render/scalarCanvas';
 import { buildLut, PALETTES, type ColorLut } from './render/palette';
@@ -36,6 +37,8 @@ const JAPAN_BOUNDS: [[number, number], [number, number]] = [
 ];
 
 maplibregl.setWorkerUrl(workerUrl);
+registerTerrainProtocols();
+const terrainIndex = await loadTerrainIndex();
 
 let theme: ThemeName = loadTheme();
 document.documentElement.dataset.theme = theme;
@@ -46,7 +49,7 @@ const map = new maplibregl.Map({
   bounds: HOKKAIDO_BOUNDS,
   fitBoundsOptions: { padding: { top: 120, bottom: 140, left: 16, right: 16 } },
   minZoom: 4,
-  maxZoom: 12,
+  maxZoom: 15,
   maxBounds: JAPAN_BOUNDS,
   attributionControl: false,
   // Needed later to grab frames for video export
@@ -101,7 +104,11 @@ document.getElementById('source-line')!.innerHTML = [
       ` · Modell ${esc(m.model)} · Lauf ${formatRun(m.runTime)}` +
       (Date.now() - m.runTime > STALE_MS ? ' · <strong>veraltet</strong>' : '') +
       ` · <span class="note" title="${esc(m.notes.join('\n'))}">interpoliert ⓘ</span>`,
-  'Relief: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a>',
+  'Relief: ' +
+    (terrainIndex
+      ? `<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">${esc(terrainIndex.attribution)}</a> · `
+      : '') +
+    '<a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a>',
   'Karte: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a> / <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>',
 ].join(' · ');
 

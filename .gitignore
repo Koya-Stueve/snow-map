@@ -9,3 +9,4 @@ inspo/
 # Generated data
 .cache/
 public/data/
+public/terrain/

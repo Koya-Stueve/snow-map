@@ -1,9 +1,8 @@
 import type { StyleSpecification } from 'maplibre-gl';
 import { MAP_PALETTES, type ThemeName } from '../theme';
+import { AO_TILES, DEM_TILES } from './terrainSource';
 
-// Free, keyless sources. Attributions are rendered in our own source line
-// (see src/ui/sourceLine.ts) and in MapLibre's attribution control.
-export const TERRAIN_TILES = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+// Free, keyless sources. Attributions are shown in our own source line (main.ts).
 export const OPENFREEMAP_TILEJSON = 'https://tiles.openfreemap.org/planet';
 export const GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
 
@@ -15,14 +14,19 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
     version: 8,
     glyphs: GLYPHS,
     sources: {
+      // GSI-derived local tiles where built, Mapzen/AWS elsewhere (see terrainSource.ts)
       [DEM_SOURCE_ID]: {
         type: 'raster-dem',
-        tiles: [TERRAIN_TILES],
+        tiles: [DEM_TILES],
         encoding: 'terrarium',
         tileSize: 256,
         maxzoom: 14,
-        attribution:
-          '<a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">Terrain: Mapzen / AWS Terrain Tiles</a>',
+      },
+      ao: {
+        type: 'raster',
+        tiles: [AO_TILES],
+        tileSize: 256,
+        maxzoom: 14,
       },
       omt: {
         type: 'vector',
@@ -56,6 +60,17 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
           'hillshade-accent-color': 'rgba(0,0,0,0)',
           'hillshade-exaggeration': p.snowShadeExaggeration,
           'hillshade-illumination-direction': 315,
+        },
+      },
+      // Precomputed ambient occlusion (black with alpha) over terrain and snow
+      {
+        id: 'ambient-occlusion',
+        type: 'raster',
+        source: 'ao',
+        paint: {
+          'raster-opacity': p.aoOpacity,
+          'raster-resampling': 'linear',
+          'raster-fade-duration': 0,
         },
       },
       {

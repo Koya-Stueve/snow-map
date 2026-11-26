@@ -16,6 +16,8 @@ export interface MapPalette {
   /** Shadow-only hillshade drawn over the weather layer, so snow keeps its relief texture */
   snowShadeColor: string;
   snowShadeExaggeration: number;
+  /** Strength of the precomputed ambient-occlusion layer */
+  aoOpacity: number;
 }
 
 export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
@@ -32,6 +34,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     hillshadeExaggeration: 0.9,
     snowShadeColor: '#0b1430',
     snowShadeExaggeration: 0.55,
+    aoOpacity: 0.85,
   },
   // Inspired by the light grey relief + colored snow look (Inspo images)
   light: {
@@ -46,6 +49,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     hillshadeExaggeration: 0.6,
     snowShadeColor: '#5a6470',
     snowShadeExaggeration: 0.4,
+    aoOpacity: 0.6,
   },
 };
 
