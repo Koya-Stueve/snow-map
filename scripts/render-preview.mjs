@@ -7,7 +7,7 @@
 //   node scripts/render-preview.mjs video [shot] [frames]  → renders/<shot>.mp4
 //
 // Shots: daisetsu (default), niseko, tomamu.
-// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), COLUMNS=1 (column view), LAYER
+// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), COLUMNS=1 (column view; DENSITY=1, COLFADE=1), LAYER
 // (snowfall | snow_depth), GPU=0 (software), FFMPEG (path to ffmpeg).
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
@@ -55,20 +55,26 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 const COLUMNS = process.env.COLUMNS === '1';
-await page.evaluateOnNewDocument(
-  (layer, columns) => {
-    try {
-      localStorage.setItem('snowmap.layer', layer);
-      localStorage.setItem('snowmap.columns', columns ? '1' : '0');
-    } catch {}
-  },
-  LAYER,
-  COLUMNS,
-);
+// Column options: DENSITY=1 (more snow = more columns), COLFADE=1 (soft foot)
+const flags = {
+  'snowmap.layer': LAYER,
+  'snowmap.columns': COLUMNS ? '1' : '0',
+  'snowmap.colDensity': process.env.DENSITY === '1' ? '1' : '0',
+  'snowmap.colFade': process.env.COLFADE === '1' ? '1' : '0',
+};
+await page.evaluateOnNewDocument((flags) => {
+  try {
+    for (const [k, v] of Object.entries(flags)) localStorage.setItem(k, v);
+  } catch {}
+}, flags);
 await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
 await page.waitForFunction(() => window.snowMap && window.snowApp, { timeout: 120000 });
 if (COLUMNS) await page.waitForFunction(() => window.snowApp.columns, { timeout: 180000 });
-const suffix = (LAYER === 'snowfall' ? '' : '-' + LAYER) + (COLUMNS ? '-columns' : '');
+const suffix =
+  (LAYER === 'snowfall' ? '' : '-' + LAYER) +
+  (COLUMNS ? '-columns' : '') +
+  (COLUMNS && process.env.DENSITY === '1' ? '-dichte' : '') +
+  (COLUMNS && process.env.COLFADE === '1' ? '-fuss' : '');
 
 const renderer = await page.evaluate(() => {
   const gl = document.createElement('canvas').getContext('webgl2');

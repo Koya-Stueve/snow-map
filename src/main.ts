@@ -216,6 +216,7 @@ columnsBtn.addEventListener('click', () => {
   columnsMode = !columnsMode;
   store('snowmap.columns', columnsMode);
   syncColumnsBtn();
+  syncColumnOptsRow();
   if (columnsMode) {
     if (columns) addColumnsLayer();
     void ensureColumns();
@@ -229,7 +230,40 @@ columnsBtn.addEventListener('click', () => {
  * - density: number of columns grows with the amount (full density at `densityFull`)
  * - baseFade: metres over which the column foot fades into the terrain
  */
-const columnOpts = { threshold: 0.075, density: false, densityFull: 0.5, baseFade: 0 };
+const BASE_FADE_M = 1400;
+const columnOpts = {
+  threshold: 0.075,
+  density: stored('snowmap.colDensity', false),
+  densityFull: 0.5,
+  baseFade: stored('snowmap.colFade', false) ? BASE_FADE_M : 0,
+};
+
+// Option chips for the column view (only visible while columns are shown)
+const columnOptsRow = document.createElement('div');
+columnOptsRow.className = 'column-opts';
+legendSlot.appendChild(columnOptsRow);
+const optChip = (label: string, title: string, get: () => boolean, set: (v: boolean) => void, key: string) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'refine-toggle';
+  b.title = title;
+  const sync = () => {
+    b.textContent = `${get() ? '☑' : '☐'} ${label}`;
+    b.classList.toggle('active', get());
+  };
+  sync();
+  b.addEventListener('click', () => {
+    set(!get());
+    store(key, get());
+    sync();
+    renderAt(time.state);
+  });
+  columnOptsRow.appendChild(b);
+};
+optChip('Dichte', 'Anzahl der Säulen wächst mit der Schneemenge', () => columnOpts.density, (v) => (columnOpts.density = v), 'snowmap.colDensity');
+optChip('weicher Fuß', 'Säulen laufen nach unten weich ins Gelände aus', () => columnOpts.baseFade > 0, (v) => (columnOpts.baseFade = v ? BASE_FADE_M : 0), 'snowmap.colFade');
+const syncColumnOptsRow = () => (columnOptsRow.style.display = columnsMode ? '' : 'none');
+syncColumnOptsRow();
 
 /** Column scaling per layer/mode: metres per unit, unit value where the colour turns pink, legend ticks */
 function columnSpec(vt: ViewTime) {

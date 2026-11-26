@@ -210,6 +210,11 @@ body {
   cursor: pointer;
   text-shadow: none;
 }
+.column-opts {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
 .refine-toggle.active {
   color: var(--fg);
   border-color: var(--accent);

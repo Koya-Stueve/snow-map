@@ -1,6 +1,6 @@
 # Snow-Map
 
-Interaktive Karte für Schneeprognosen über Japans Bergen (Phase 1). Anforderungen: siehe `CLAUDE.md`.
+Interaktive Karte für Schneeprognosen über Japans Bergen (Phase 1). Anforderungen: siehe `CLAUDE.md`. Aktueller Stand, Entscheidungen und Einrichtung eines neuen Rechners: siehe [`docs/STATUS.md`](docs/STATUS.md).
 
 ## Starten
 
