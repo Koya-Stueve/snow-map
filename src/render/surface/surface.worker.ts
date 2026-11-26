@@ -14,6 +14,8 @@ export interface InitMsg {
   aoKeys: string[];
   base: string; // absolute URL of /terrain/
   ext: string;
+  /** Output pixels per tile side = 256 · scale (2 = hi-dpi / export quality) */
+  scale: number;
 }
 export interface FrameMsg {
   type: 'frame';
@@ -59,9 +61,9 @@ class Lru<V> {
     while (this.m.size > this.max) this.m.delete(this.m.keys().next().value!);
   }
 }
-const heights = new Lru<Promise<Float32Array | null>>(64);
-const aoTiles = new Lru<Promise<Uint8Array | null>>(48);
-const statics = new Lru<Promise<StaticTile>>(64);
+const heights = new Lru<Promise<Float32Array | null>>(80);
+const aoTiles = new Lru<Promise<Float32Array | null>>(80);
+let statics = new Lru<Promise<StaticTile>>(64);
 
 const canvas = new OffscreenCanvas(TILE, TILE);
 const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
@@ -95,12 +97,12 @@ function loadHeights(z: number, x: number, y: number): Promise<Float32Array | nu
   return p;
 }
 
-function loadAo(k: string): Promise<Uint8Array | null> {
+function loadAo(k: string): Promise<Float32Array | null> {
   let p = aoTiles.get(k);
   if (!p) {
     p = init!.aoSet.has(k)
       ? pixels(`${init!.base}ao/${k}.${init!.ext}`)
-          .then((px) => (px ? Uint8Array.from({ length: TILE * TILE }, (_, i) => px[i * 4 + 3]) : null))
+          .then((px) => (px ? Float32Array.from({ length: TILE * TILE }, (_, i) => px[i * 4 + 3]) : null))
           .catch(() => null)
       : Promise.resolve(null);
     aoTiles.set(k, p);
@@ -108,29 +110,70 @@ function loadAo(k: string): Promise<Uint8Array | null> {
   return p;
 }
 
-/** 258×258 heights: the tile plus a 1 px border taken from its neighbours (edge-clamped if missing) */
-async function heightBlock(z: number, x: number, y: number): Promise<Float32Array> {
-  const n = 2 ** z;
-  const get = (dx: number, dy: number) => loadHeights(z, (x + dx + n) % n, Math.min(n - 1, Math.max(0, y + dy)));
-  const [c, nw, nn, ne, w, e, sw, s, se] = await Promise.all([
-    get(0, 0), get(-1, -1), get(0, -1), get(1, -1), get(-1, 0), get(1, 0), get(-1, 1), get(0, 1), get(1, 1),
-  ]);
-  const W = TILE + 2;
-  const out = new Float32Array(W * W);
-  const center = c ?? new Float32Array(TILE * TILE);
-  const at = (t: Float32Array | null, px: number, py: number, fx: number, fy: number) =>
-    t ? t[py * TILE + px] : center[Math.min(TILE - 1, Math.max(0, fy)) * TILE + Math.min(TILE - 1, Math.max(0, fx))];
-  for (let py = -1; py <= TILE; py++)
-    for (let px = -1; px <= TILE; px++) {
-      const left = px < 0;
-      const right = px >= TILE;
-      const top = py < 0;
-      const bottom = py >= TILE;
-      const t = top ? (left ? nw : right ? ne : nn) : bottom ? (left ? sw : right ? se : s) : left ? w : right ? e : center;
-      const lx = left ? TILE - 1 : right ? 0 : px;
-      const ly = top ? TILE - 1 : bottom ? 0 : py;
-      out[(py + 1) * W + px + 1] = at(t, lx, ly, px, py);
+const MAX_DEM_Z = 14;
+
+/**
+ * Bilinearly sample tiles of zoom zd at the pixel centres of an output block for
+ * tile (z, x, y): side = size + 2·border pixels. With zd = z + 1 and size 512 this
+ * hits the pixels of the finer tiles exactly (real extra detail); otherwise it upsamples.
+ * Missing tiles fall back to the nearest sample inside the tile's own area.
+ */
+async function sampleBlock(
+  z: number,
+  x: number,
+  y: number,
+  zd: number,
+  size: number,
+  border: number,
+  load: (z: number, x: number, y: number) => Promise<Float32Array | null>,
+): Promise<Float32Array | null> {
+  const f = 2 ** (zd - z);
+  const side = size + 2 * border;
+  // global pixel coordinate (zoom zd) of output pixel i
+  const g = (t: number, i: number) => (t + (i - border + 0.5) / size) * f * TILE - 0.5;
+  const t0x = Math.floor(g(x, 0) / TILE);
+  const t1x = Math.floor((g(x, side - 1) + 1) / TILE);
+  const t0y = Math.floor(g(y, 0) / TILE);
+  const t1y = Math.floor((g(y, side - 1) + 1) / TILE);
+  const n = 2 ** zd;
+  const tiles = new Map<string, Float32Array | null>();
+  const jobs: Promise<void>[] = [];
+  for (let ty = t0y; ty <= t1y; ty++)
+    for (let tx = t0x; tx <= t1x; tx++) {
+      const yy = Math.min(n - 1, Math.max(0, ty));
+      const xx = ((tx % n) + n) % n;
+      jobs.push(load(zd, xx, yy).then((d) => void tiles.set(`${tx}/${ty}`, d)));
     }
+  await Promise.all(jobs);
+  if (![...tiles.values()].some(Boolean)) return null;
+  // own area, for clamping when a neighbour tile is missing
+  const cx0 = x * f * TILE;
+  const cx1 = (x + 1) * f * TILE - 1;
+  const cy0 = y * f * TILE;
+  const cy1 = (y + 1) * f * TILE - 1;
+  const read = (px: number, py: number) => {
+    const tx = Math.floor(px / TILE);
+    const ty = Math.floor(py / TILE);
+    const t = tiles.get(`${tx}/${ty}`);
+    return t ? t[(py - ty * TILE) * TILE + (px - tx * TILE)] : undefined;
+  };
+  const at = (px: number, py: number): number =>
+    read(px, py) ?? read(Math.min(cx1, Math.max(cx0, px)), Math.min(cy1, Math.max(cy0, py))) ?? 0;
+  const out = new Float32Array(side * side);
+  for (let j = 0; j < side; j++) {
+    const gy = g(y, j);
+    const y0 = Math.floor(gy);
+    const fy = gy - y0;
+    for (let i = 0; i < side; i++) {
+      const gx = g(x, i);
+      const x0 = Math.floor(gx);
+      const fx = gx - x0;
+      out[j * side + i] =
+        fx === 0 && fy === 0
+          ? at(x0, y0)
+          : (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+    }
+  }
   return out;
 }
 
@@ -138,7 +181,14 @@ function staticTile(z: number, x: number, y: number): Promise<StaticTile> {
   const k = `${z}/${x}/${y}`;
   let p = statics.get(k);
   if (!p) {
-    p = Promise.all([heightBlock(z, x, y), loadAo(k)]).then(([h, ao]) => computeStatic(h, ao, z, x, y, init!.grid));
+    const size = TILE * init!.scale;
+    const zd = Math.min(MAX_DEM_Z, z + Math.log2(init!.scale));
+    p = Promise.all([
+      sampleBlock(z, x, y, zd, size, 1, loadHeights),
+      sampleBlock(z, x, y, zd, size, 0, (zz, xx, yy) => loadAo(`${zz}/${xx}/${yy}`)),
+    ]).then(([h, ao]) =>
+      computeStatic(h ?? new Float32Array((size + 2) ** 2), ao ? Uint8Array.from(ao, (v) => Math.round(v)) : null, z, x, y, init!.grid, size),
+    );
     statics.set(k, p);
   }
   return p;
@@ -156,6 +206,8 @@ self.onmessage = async (ev: MessageEvent<InitMsg | FrameMsg | TileMsg>) => {
   const msg = ev.data;
   if (msg.type === 'init') {
     init = { ...msg, demSet: new Set(msg.demKeys), aoSet: new Set(msg.aoKeys) };
+    // Static tiles are ~0.45 MB at 256 px, ~1.8 MB at 512 px
+    statics = new Lru<Promise<StaticTile>>(msg.scale > 1 ? 32 : 64);
     const n = msg.grid.nx * msg.grid.ny;
     for (const key of Object.keys(dense) as (keyof typeof dense)[]) dense[key] = new Float32Array(n);
     if (msg.href) scatter(msg.href, dense.href);
@@ -184,7 +236,7 @@ self.onmessage = async (ev: MessageEvent<InitMsg | FrameMsg | TileMsg>) => {
     const t0 = performance.now();
     const st = await staticTile(msg.z, msg.x, msg.y);
     const t1 = performance.now();
-    const img = new ImageData(TILE, TILE);
+    const img = new ImageData(st.size, st.size);
     shadeTile(st, frame, init.grid, img.data);
     const bmp = await createImageBitmap(img);
     const t2 = performance.now();

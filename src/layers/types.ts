@@ -32,6 +32,12 @@ export interface WeatherLayer {
   valueAt(vt: ViewTime, lon: number, lat: number): number;
   /** Value from a named point series (e.g. resort) if the dataset has one; NaN otherwise */
   valueAtPoint(vt: ViewTime, pointId: string): number;
+  /** Per stored cell values for the time state (input for the surface shader) */
+  cellsAt(vt: ViewTime): Float32Array;
+  /** Per-cell inputs for the visual downscaling (freezing level, wind "to" vector); null = not available */
+  refinementAt(vt: ViewTime): { fl: Float32Array | null; wx: Float32Array; wy: Float32Array } | null;
+  /** Short text for the readout, e.g. "Neuschnee seit Do 19:00" */
+  describe(vt: ViewTime, startLabel: string): string;
   /** Fill `out` (grid-sized) with the full field for the given time state */
   fieldAt(vt: ViewTime, out: Float32Array): Float32Array;
 }

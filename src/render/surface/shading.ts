@@ -35,6 +35,7 @@ export interface SurfaceTheme {
 
 /** Static, time-independent per-pixel terrain attributes of one tile */
 export interface StaticTile {
+  size: number; // pixels per side (256, or 512 for hi-dpi quality)
   elev: Int16Array; // metres
   slope: Uint8Array; // degrees (true, not exaggerated)
   downX: Int8Array; // downhill unit vector east ·127
@@ -81,44 +82,46 @@ const LY = Math.cos(SUN_EL) * Math.cos(SUN_AZ);
 const LZ = Math.sin(SUN_EL);
 
 /**
- * Derive static attributes from a 258×258 height block (tile + 1 px border from
- * neighbours, so normals match across tile edges) and an optional AO tile.
+ * Derive static attributes from a (size+2)² height block (tile + 1 px border from
+ * neighbours, so normals match across tile edges) and an optional AO block (size²).
  */
 export function computeStatic(
-  h258: Float32Array,
+  h: Float32Array,
   ao: Uint8Array | null,
   z: number,
   x: number,
   y: number,
   grid: GridSpec,
+  size = TILE,
 ): StaticTile {
-  const n = TILE * TILE;
+  const n = size * size;
   const st: StaticTile = {
+    size,
     elev: new Int16Array(n),
     slope: new Uint8Array(n),
     downX: new Int8Array(n),
     downY: new Int8Array(n),
     light: new Uint8Array(n),
     ao: ao ?? new Uint8Array(n),
-    colI: new Int32Array(TILE),
-    colT: new Float32Array(TILE),
-    rowJ: new Int32Array(TILE),
-    rowT: new Float32Array(TILE),
+    colI: new Int32Array(size),
+    colT: new Float32Array(size),
+    rowJ: new Int32Array(size),
+    rowT: new Float32Array(size),
   };
   const latMid = latOf(y + 0.5, z);
-  const mpp = (40075016.686 * Math.cos((latMid * Math.PI) / 180)) / (TILE * 2 ** z);
+  const mpp = (40075016.686 * Math.cos((latMid * Math.PI) / 180)) / (size * 2 ** z);
   // Readable relief at all zooms: exaggerate shading more when zoomed out
   const exag = 1.4 + 0.35 * Math.max(0, 12 - z);
-  const W = TILE + 2;
-  for (let py = 0; py < TILE; py++) {
-    for (let px = 0; px < TILE; px++) {
+  const W = size + 2;
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
       const c = (py + 1) * W + px + 1;
-      const h = Math.max(0, h258[c]);
-      const dzdx = (h258[c + 1] - h258[c - 1]) / (2 * mpp); // east
-      const dzdy = (h258[c - W] - h258[c + W]) / (2 * mpp); // north (row −1 is north)
+      const hc = Math.max(0, h[c]);
+      const dzdx = (h[c + 1] - h[c - 1]) / (2 * mpp); // east
+      const dzdy = (h[c - W] - h[c + W]) / (2 * mpp); // north (row −1 is north)
       const g = Math.hypot(dzdx, dzdy);
-      const i = py * TILE + px;
-      st.elev[i] = Math.round(Math.min(h, 32767));
+      const i = py * size + px;
+      st.elev[i] = Math.round(Math.min(hc, 32767));
       st.slope[i] = Math.round((Math.atan(g) * 180) / Math.PI);
       if (g > 1e-6) {
         st.downX[i] = Math.round((-dzdx / g) * 127);
@@ -132,13 +135,13 @@ export function computeStatic(
     }
   }
   // Coarse grid positions per column / row
-  for (let p = 0; p < TILE; p++) {
-    const lon = lonOf(x + (p + 0.5) / TILE, z);
+  for (let p = 0; p < size; p++) {
+    const lon = lonOf(x + (p + 0.5) / size, z);
     const fx = (lon - grid.lon0) / grid.dLon;
     const i0 = Math.floor(fx);
     st.colI[p] = fx < 0 || fx > grid.nx - 1 ? -1 : Math.min(i0, grid.nx - 2);
     st.colT[p] = fx - st.colI[p];
-    const lat = latOf(y + (p + 0.5) / TILE, z);
+    const lat = latOf(y + (p + 0.5) / size, z);
     const fy = (lat - grid.lat0) / grid.dLat;
     const j0 = Math.floor(fy);
     st.rowJ[p] = fy < 0 || fy > grid.ny - 1 ? -1 : Math.min(j0, grid.ny - 2);
@@ -153,7 +156,7 @@ function bilin(f: Float32Array, nx: number, j: number, ty: number, i: number, tx
   return (f[k] * (1 - tx) + f[k + 1] * tx) * (1 - ty) + (f[k + nx] * (1 - tx) + f[k + nx + 1] * tx) * ty;
 }
 
-/** Shade one tile into `out` (RGBA, 256×256). Deterministic for a given (static, frame). */
+/** Shade one tile into `out` (RGBA, size×size). Deterministic for a given (static, frame). */
 export function shadeTile(st: StaticTile, frame: Frame, grid: GridSpec, out: Uint8ClampedArray): void {
   const { theme: th, snow, refined, lut } = frame;
   const fl = refined ? frame.fl : null;
@@ -163,12 +166,13 @@ export function shadeTile(st: StaticTile, frame: Frame, grid: GridSpec, out: Uin
   const nx = grid.nx;
   const k = (LUT_SIZE - 1) / (frame.lnHi - frame.lnLo);
   const [tr, tg, tb] = th.terrain;
+  const size = st.size;
 
-  for (let py = 0; py < TILE; py++) {
+  for (let py = 0; py < size; py++) {
     const j = st.rowJ[py];
     const ty = st.rowT[py];
-    for (let px = 0; px < TILE; px++) {
-      const p = py * TILE + px;
+    for (let px = 0; px < size; px++) {
+      const p = py * size + px;
       const nl = st.light[p] / 255;
       const ao = st.ao[p] / 255;
 

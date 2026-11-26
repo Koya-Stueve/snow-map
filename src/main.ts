@@ -19,7 +19,8 @@ import { RESORTS } from './data/resorts';
 import { loadDataset } from './data/load';
 import { HOUR_MS } from './data/types';
 import { SnowfallLayer } from './layers/snow';
-import type { ViewTime } from './layers/types';
+import { SnowDepthLayer } from './layers/snowDepth';
+import type { ViewTime, WeatherLayer } from './layers/types';
 import { TimeController } from './time/timeController';
 import { ResortLabels } from './ui/resortLabels';
 import { Timeline } from './ui/timeline';
@@ -60,13 +61,29 @@ if (new URLSearchParams(location.search).has('render')) document.body.classList.
 
 // --- Data first: the surface renderer must exist before the map asks for tiles ---
 const [terrainIndex, { dataset, fallbackReason }] = await Promise.all([loadTerrainIndex(), loadDataset()]);
-const layer = new SnowfallLayer();
-layer.prepare(dataset);
+// Layer registry: new weather layers (Phase 2) are added here
+const layers: WeatherLayer[] = [new SnowfallLayer(), ...(SnowDepthLayer.available(dataset) ? [new SnowDepthLayer()] : [])];
+for (const l of layers) l.prepare(dataset);
+const storedLayer = (() => {
+  try {
+    return localStorage.getItem('snowmap.layer');
+  } catch {
+    return null;
+  }
+})();
+let layer: WeatherLayer = layers.find((l) => l.id === storedLayer) ?? layers[0];
+
+// Surface tile resolution: 512 px per tile on hi-dpi screens and for renders
+// (crisp relief + snow detail), 256 px otherwise. ?quality=1|2 overrides.
+const params = new URLSearchParams(location.search);
+const qualityParam = Number(params.get('quality'));
+const surfaceScale = qualityParam === 1 || qualityParam === 2 ? qualityParam : params.has('render') || devicePixelRatio >= 1.5 ? 2 : 1;
 
 const surface = new SurfaceRenderer({
   grid: dataset.grid,
   cells: dataset.cells,
   href: dataset.elevationMean ?? null,
+  scale: surfaceScale,
   ...terrainInfoForWorkers(),
 });
 
@@ -165,7 +182,20 @@ document.getElementById('theme-toggle')!.addEventListener('click', () => {
 
 const labels = new ResortLabels(map, RESORTS);
 const time = new TimeController(dataset.times);
-new Timeline(document.getElementById('hud-bottom')!, time, dataset.times);
+const timeline = new Timeline(document.getElementById('hud-bottom')!, time, dataset.times);
+const selectLayer = (id: string) => {
+  layer = layers.find((l) => l.id === id) ?? layer;
+  try {
+    localStorage.setItem('snowmap.layer', layer.id);
+  } catch {
+    /* storage unavailable */
+  }
+  timeline.setActiveLayer(layer.id);
+  timeline.setModesEnabled(layer.supportsAccumulation);
+  renderAt(time.state);
+};
+if (layers.length > 1) timeline.setLayers(layers.map((l) => ({ id: l.id, label: l.label })), layer.id, selectLayer);
+timeline.setModesEnabled(layer.supportsAccumulation);
 
 const readoutTime = document.getElementById('readout-time')!;
 const readoutSub = document.getElementById('readout-sub')!;
@@ -198,8 +228,9 @@ function renderAt(vt: ViewTime) {
   const ms = dataset.times[vt.startIndex] + vt.t * HOUR_MS;
   readoutTime.textContent = `${formatDate(ms)} · ${formatTime(ms)} ${DISPLAY_TZ_LABEL}`;
   const leadH = Math.round((ms - dataset.meta.runTime) / HOUR_MS);
+  const start = dataset.times[vt.startIndex];
   readoutSub.textContent =
-    `${vt.mode === 'accumulated' ? `${layer.label} seit ${formatDay(dataset.times[vt.startIndex])} ${formatTime(dataset.times[vt.startIndex])}` : `${layer.label} pro Stunde`}` +
+    layer.describe(vt, `${formatDay(start)} ${formatTime(start)}`) +
     ` · Prognosestunde +${leadH} h · Lauf ${formatRun(dataset.meta.runTime)}`;
 
   // Surface tiles (terrain light + AO + snow) for this state
@@ -208,7 +239,7 @@ function renderAt(vt: ViewTime) {
   lastVersion = surface.setFrame({
     refined,
     snow: layer.cellsAt(vt).slice(),
-    fl: ref ? ref.fl.slice() : null,
+    fl: ref?.fl ? ref.fl.slice() : null,
     wx: ref ? ref.wx.slice() : null,
     wy: ref ? ref.wy.slice() : null,
     lut: packed,

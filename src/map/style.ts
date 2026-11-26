@@ -29,9 +29,10 @@ export function buildStyle(theme: ThemeName, opts: StyleOptions = { terrain: fal
       'sky-color': p.sky.sky,
       'horizon-color': p.sky.horizon,
       'fog-color': p.sky.fog,
-      'sky-horizon-blend': 0.6,
-      'horizon-fog-blend': 0.6,
-      'fog-ground-blend': 0.75,
+      // Aerial perspective: distant terrain fades into the fog colour, horizon blends softly into the sky
+      'sky-horizon-blend': 0.7,
+      'horizon-fog-blend': 0.85,
+      'fog-ground-blend': 0.45,
       'atmosphere-blend': 0,
     },
     sources: {

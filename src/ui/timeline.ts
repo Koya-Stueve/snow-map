@@ -18,6 +18,37 @@ export class Timeline {
   private rangeBtns = new Map<number, HTMLButtonElement>();
   private modeBtns = new Map<TimeMode, HTMLButtonElement>();
   private lastTickKey = '';
+  private layerGroup: HTMLDivElement | null = null;
+  private layerBtns = new Map<string, HTMLButtonElement>();
+
+  /** Layer chips (e.g. Neuschnee | Schneehöhe) in the options row */
+  setLayers(options: Array<{ id: string; label: string }>, active: string, onSelect: (id: string) => void) {
+    if (!this.layerGroup) {
+      this.layerGroup = document.createElement('div');
+      this.layerGroup.className = 'tl-chips';
+      this.layerGroup.setAttribute('role', 'group');
+      this.layerGroup.setAttribute('aria-label', 'Wettergröße');
+      this.el.querySelector('.tl-options')!.prepend(this.layerGroup);
+    }
+    this.layerGroup.innerHTML = '';
+    this.layerBtns.clear();
+    for (const o of options) {
+      const b = chip(o.label);
+      b.addEventListener('click', () => onSelect(o.id));
+      this.layerGroup.appendChild(b);
+      this.layerBtns.set(o.id, b);
+    }
+    this.setActiveLayer(active);
+  }
+
+  setActiveLayer(id: string) {
+    for (const [k, b] of this.layerBtns) b.classList.toggle('active', k === id);
+  }
+
+  /** Disable Summe/Stündlich for layers without accumulation (e.g. snow depth) */
+  setModesEnabled(enabled: boolean) {
+    for (const b of this.modeBtns.values()) b.disabled = !enabled;
+  }
 
   constructor(
     container: HTMLElement,

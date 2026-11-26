@@ -23,16 +23,17 @@ const VIVID: PaletteStop[] = [
 ];
 
 /** Ice → white (dark Inspo videos: "white where snow is, brighter = more") – dark theme */
-// Reaches near-white by ~20 cm (or the equivalent hourly stop) so fresh snow reads as snow
+// Brightness spread over the whole range so 5 / 20 / 50 / 100+ cm stay distinguishable:
+// thin snow = translucent blue, white from the 5th stop (≈ 50 cm), a cool glow beyond
 const ICE: PaletteStop[] = [
-  { color: [95, 130, 195], alpha: 0.5 },
-  { color: [155, 185, 235], alpha: 0.75 },
-  { color: [200, 220, 250], alpha: 0.88 },
-  { color: [232, 241, 255], alpha: 0.96 },
-  { color: [244, 248, 255], alpha: 1 },
-  { color: [250, 252, 255], alpha: 1 },
-  { color: [255, 255, 255], alpha: 1 },
-  { color: [255, 255, 255], alpha: 1 },
+  { color: [80, 112, 178], alpha: 0.42 },
+  { color: [112, 145, 208], alpha: 0.6 },
+  { color: [145, 175, 228], alpha: 0.74 },
+  { color: [178, 202, 242], alpha: 0.85 },
+  { color: [208, 224, 250], alpha: 0.93 },
+  { color: [232, 240, 255], alpha: 1 },
+  { color: [246, 249, 255], alpha: 1 },
+  { color: [215, 238, 255], alpha: 1 },
 ];
 
 export const PALETTES: Record<ThemeName, PaletteStop[]> = { dark: ICE, light: VIVID };

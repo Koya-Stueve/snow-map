@@ -31,6 +31,9 @@ export class SnowfallLayer implements WeatherLayer {
     if (mode === 'hourly') return v < 0.05 ? '0' : v.toFixed(1);
     return String(Math.round(v));
   }
+  describe(vt: ViewTime, startLabel: string) {
+    return vt.mode === 'accumulated' ? `${this.label} seit ${startLabel}` : `${this.label} pro Stunde`;
+  }
 
   prepare(ds: ForecastDataset): void {
     const hourly = ds.fields.snowfall;
@@ -118,7 +121,7 @@ export class SnowfallLayer implements WeatherLayer {
    * current hour where no snow fell). Hourly mode: values at the current time.
    * null if the dataset has no such fields (e.g. synthetic data).
    */
-  refinementAt(vt: ViewTime): { fl: Float32Array; wx: Float32Array; wy: Float32Array } | null {
+  refinementAt(vt: ViewTime): { fl: Float32Array | null; wx: Float32Array; wy: Float32Array } | null {
     const r = this.refine;
     if (!r) return null;
     const key = `${vt.startIndex}|${vt.t}|${vt.mode}`;
