@@ -45,6 +45,19 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
           'hillshade-illumination-direction': 315,
         },
       },
+      // Weather rasters are inserted here (between the base relief and this shading)
+      {
+        id: 'snow-shade',
+        type: 'hillshade',
+        source: DEM_SOURCE_ID,
+        paint: {
+          'hillshade-shadow-color': p.snowShadeColor,
+          'hillshade-highlight-color': 'rgba(255,255,255,0)',
+          'hillshade-accent-color': 'rgba(0,0,0,0)',
+          'hillshade-exaggeration': p.snowShadeExaggeration,
+          'hillshade-illumination-direction': 315,
+        },
+      },
       {
         id: 'water',
         type: 'fill',
@@ -94,7 +107,8 @@ export function buildStyle(theme: ThemeName): StyleSpecification {
 }
 
 /**
- * Weather rasters go below the hillshade: the relief then shades the snow,
- * and the opaque water layer masks values over the sea.
+ * Weather rasters go between the full relief and a shadow-only hillshade: the
+ * snow covers the base relief but keeps a shaded 3D texture, and the opaque
+ * water layer masks values over the sea.
  */
-export const WEATHER_INSERT_BEFORE = 'hillshade';
+export const WEATHER_INSERT_BEFORE = 'snow-shade';

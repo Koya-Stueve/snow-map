@@ -20,8 +20,19 @@ export class RasterOverlay {
   ) {
     this.sourceId = `${id}-src`;
     this.layerId = id;
-    map.on('style.load', () => this.add());
-    if (map.isStyleLoaded()) this.add();
+    // The style may already be loaded when we're created (data loads async), and
+    // isStyleLoaded() stays false while tiles are loading – so just try now and
+    // again on every style event until it sticks.
+    const tryAdd = () => {
+      try {
+        this.add();
+      } catch {
+        /* style not ready yet – a later style event will retry */
+      }
+    };
+    map.on('style.load', tryAdd);
+    map.on('styledata', tryAdd);
+    tryAdd();
   }
 
   private add() {

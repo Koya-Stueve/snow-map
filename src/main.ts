@@ -15,7 +15,7 @@ import { buildLut, PALETTES, type ColorLut } from './render/palette';
 import { Legend } from './ui/legend';
 import { loadTheme, saveTheme, type ThemeName } from './theme';
 import { RESORTS } from './data/resorts';
-import { createSyntheticDataset } from './data/synthetic';
+import { loadDataset } from './data/load';
 import { HOUR_MS } from './data/types';
 import { SnowfallLayer } from './layers/snow';
 import type { ViewTime } from './layers/types';
@@ -57,8 +57,8 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-ri
 // No MapLibre attribution control: all required credits (with links) are in our
 // own always-visible source line, which also ends up in exported videos.
 
-// --- Data + layer (synthetic until step 5) ---
-const dataset = createSyntheticDataset();
+// --- Data + layer: fetched forecast, or synthetic sample data as fallback ---
+const { dataset, fallbackReason } = await loadDataset();
 const layer = new SnowfallLayer();
 layer.prepare(dataset);
 
@@ -90,10 +90,17 @@ new Timeline(document.getElementById('hud-bottom')!, time, dataset.times);
 const readoutTime = document.getElementById('readout-time')!;
 const readoutSub = document.getElementById('readout-sub')!;
 
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+const m = dataset.meta;
+const STALE_MS = 24 * HOUR_MS;
 document.getElementById('source-line')!.innerHTML = [
-  dataset.meta.synthetic
-    ? '<strong>Synthetische Beispieldaten – keine Prognose</strong>'
-    : `${dataset.meta.source} · Lauf ${formatRun(dataset.meta.runTime)}`,
+  m.synthetic
+    ? `<strong title="${esc(fallbackReason ?? '')}">Synthetische Beispieldaten – keine Prognose</strong>`
+    : `Wetterdaten: <a href="${esc(m.providerUrl ?? '')}" target="_blank" rel="noopener">${esc(m.provider)}</a>` +
+      ` (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">${esc(m.licence ?? '')}</a>)` +
+      ` · Modell ${esc(m.model)} · Lauf ${formatRun(m.runTime)}` +
+      (Date.now() - m.runTime > STALE_MS ? ' · <strong>veraltet</strong>' : '') +
+      ` · <span class="note" title="${esc(m.notes.join('\n'))}">interpoliert ⓘ</span>`,
   'Relief: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a>',
   'Karte: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a> / <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>',
 ].join(' · ');
@@ -116,7 +123,11 @@ function renderAt(vt: ViewTime) {
   legend.update(`${layer.label} · ${layer.unit(vt.mode)}`, layer.colorStops(vt.mode), lut);
 
   const values: Record<string, number> = {};
-  for (const r of RESORTS) values[r.id] = layer.valueAt(vt, r.lon, r.lat);
+  for (const r of RESORTS) {
+    // Prefer the exact point series; fall back to grid interpolation
+    const p = layer.valueAtPoint(vt, r.id);
+    values[r.id] = Number.isNaN(p) ? layer.valueAt(vt, r.lon, r.lat) : p;
+  }
   labels.setValues(values, {
     format: (v) => layer.format(v, vt.mode),
     unit: layer.unit(vt.mode),

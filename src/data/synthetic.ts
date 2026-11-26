@@ -2,7 +2,8 @@
 // north-east across Japan, enhanced over (rough, hand-placed) mountain areas.
 // NOT a forecast – the UI labels it as sample data.
 
-import { HOUR_MS, type ForecastDataset, type GridSpec } from './types';
+import { HOUR_MS, type ForecastDataset } from './types';
+import { JAPAN_GRID } from './japanGrid';
 
 // Rough mountain areas: [lon, lat, radius°, weight]
 const MOUNTAINS: Array<[number, number, number, number]> = [
@@ -27,14 +28,12 @@ const STORMS = [
   { lon: 136.6, lat: 36.0, vLon: 0.05, vLat: 0.025, r: 1.0, peak: 2.0, from: 80, to: 120 },
 ];
 
-export const SAMPLE_GRID: GridSpec = { lon0: 128, lat0: 30, dLon: 0.1, dLat: 0.1, nx: 181, ny: 171 };
-
 export function createSyntheticDataset(now = Date.now(), hours = 120): ForecastDataset {
   const runTime = Math.floor(now / (6 * HOUR_MS)) * 6 * HOUR_MS - 6 * HOUR_MS; // previous 6-hourly run
   const times: number[] = [];
   for (let i = 0; i <= hours; i++) times.push(runTime + i * HOUR_MS);
 
-  const g = SAMPLE_GRID;
+  const g = JAPAN_GRID;
   const orog = new Float32Array(g.nx * g.ny);
   for (let y = 0; y < g.ny; y++) {
     const lat = g.lat0 + y * g.dLat;
@@ -78,9 +77,16 @@ export function createSyntheticDataset(now = Date.now(), hours = 120): ForecastD
   });
 
   return {
-    meta: { source: 'Synthetische Beispieldaten', model: 'Demo', runTime, synthetic: true },
+    meta: {
+      model: 'Demo',
+      provider: 'Synthetische Beispieldaten',
+      runTime,
+      synthetic: true,
+      notes: ['Erfundene Schneezellen zum Entwickeln – keine Prognose.'],
+    },
     times,
     grid: g,
+    cells: Int32Array.from({ length: g.nx * g.ny }, (_, i) => i), // every cell stored
     fields: { snowfall },
   };
 }

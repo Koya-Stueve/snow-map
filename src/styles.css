@@ -162,6 +162,10 @@ body {
 .source-line a {
   color: inherit;
 }
+.source-line .note {
+  cursor: help;
+  text-decoration: underline dotted;
+}
 .source-line strong {
   color: var(--fg);
   font-weight: 700;

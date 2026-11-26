@@ -30,6 +30,8 @@ export interface WeatherLayer {
   prepare(ds: ForecastDataset): void;
   /** Value at a point for the given time state; NaN if unavailable */
   valueAt(vt: ViewTime, lon: number, lat: number): number;
+  /** Value from a named point series (e.g. resort) if the dataset has one; NaN otherwise */
+  valueAtPoint(vt: ViewTime, pointId: string): number;
   /** Fill `out` (grid-sized) with the full field for the given time state */
   fieldAt(vt: ViewTime, out: Float32Array): Float32Array;
 }

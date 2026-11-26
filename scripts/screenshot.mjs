@@ -32,7 +32,19 @@ await page.waitForFunction(() => window.snowMap && window.snowMap.loaded(), { ti
   console.log('[warn] map did not report loaded within timeout');
 });
 await page.evaluate(() => new Promise((r) => (window.snowMap.areTilesLoaded() ? r() : window.snowMap.once('idle', r))));
-if (process.env.EVAL) console.log(await page.evaluate(process.env.EVAL));
+if (process.env.EVAL) {
+  console.log(await page.evaluate(process.env.EVAL));
+  // Let the map settle after whatever EVAL changed (bounded wait)
+  await page.evaluate(
+    () =>
+      new Promise((r) => {
+        const done = () => setTimeout(r, 300);
+        window.snowMap.once('idle', done);
+        window.snowMap.triggerRepaint();
+        setTimeout(r, 5000);
+      }),
+  );
+}
 await page.screenshot({ path: out });
 console.log('saved', out);
 await browser.close();
