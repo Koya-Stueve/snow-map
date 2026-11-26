@@ -7,8 +7,10 @@
 //   node scripts/render-preview.mjs video [shot] [frames]  → renders/<shot>.mp4
 //
 // Shots: daisetsu (default), niseko, tomamu.
-// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), COLUMNS=1 (column view; DENSITY=1, COLFADE=1), LAYER
-// (snowfall | snow_depth), GPU=0 (software), FFMPEG (path to ffmpeg).
+// Env: WIDTH/HEIGHT (1080×1920), SSAA (2 = render at 2× and downscale), COLUMNS=1 (column view; DENSITY=0 / COLFADE=0 turn density / soft foot off), LAYER
+// (snowfall | snow_depth), GPU=0 (software), FFMPEG (path to ffmpeg),
+// WORKERS (parallel browsers for video, default 2; ~1.3 GB RAM each),
+// COLSIZE (column spacing in screen px, follows the zoom), COLHEIGHT=0, ZOOM/PITCH/BEARING, TAG (file name suffix).
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
@@ -31,9 +33,13 @@ const FFMPEG = process.env.FFMPEG ?? 'ffmpeg';
 const SHOTS = {
   daisetsu: { center: [142.84, 43.66], zoom: 11.7, pitch: 64, bearing0: 5, bearing1: 30, region: [142.4, 43.3, 143.2, 43.9] },
   niseko: { center: [140.74, 42.84], zoom: 11.9, pitch: 66, bearing0: -35, bearing1: -10, region: [140.4, 42.6, 141.1, 43.0] },
-  tomamu: { center: [142.63, 43.06], zoom: 12.4, pitch: 64, bearing0: -45, bearing1: -20, region: [142.45, 42.95, 142.9, 43.15] },
+  tomamu: { center: [142.68, 43.08], zoom: 12.1, pitch: 64, bearing0: 30, bearing1: 55, region: [142.45, 42.95, 142.9, 43.15] },
 };
-const shot = SHOTS[shotName];
+const shot = SHOTS[shotName] && { ...SHOTS[shotName] };
+// Optional camera overrides (stills from further away etc.): ZOOM, PITCH, BEARING
+if (shot && process.env.ZOOM) shot.zoom = Number(process.env.ZOOM);
+if (shot && process.env.PITCH) shot.pitch = Number(process.env.PITCH);
+if (shot && process.env.BEARING) shot.bearing0 = shot.bearing1 = Number(process.env.BEARING);
 if (!shot) throw new Error(`unknown shot ${shotName} (${Object.keys(SHOTS).join(', ')})`);
 
 const browserPath = [
@@ -45,36 +51,51 @@ const browserPath = [
 
 const gpuArgs = ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-webgl'];
 const swArgs = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-const browser = await puppeteer.launch({
-  executablePath: browserPath,
-  headless: true,
-  args: process.env.GPU === '0' ? swArgs : gpuArgs,
-  defaultViewport: { width: W, height: H, deviceScaleFactor: SSAA },
-  protocolTimeout: 900000,
-});
-const page = await browser.newPage();
-page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 const COLUMNS = process.env.COLUMNS === '1';
-// Column options: DENSITY=1 (more snow = more columns), COLFADE=1 (soft foot)
+// Column options (on by default): DENSITY=0 / COLFADE=0 switch off density and soft foot
 const flags = {
   'snowmap.layer': LAYER,
   'snowmap.columns': COLUMNS ? '1' : '0',
-  'snowmap.colDensity': process.env.DENSITY === '1' ? '1' : '0',
-  'snowmap.colFade': process.env.COLFADE === '1' ? '1' : '0',
+  'snowmap.colDensity': process.env.DENSITY === '0' ? '0' : '1',
+  'snowmap.colFade': process.env.COLFADE === '0' ? '0' : '1',
+  // COLSIZE: column spacing in screen px (unset = app default 35, 0 = fixed 2.5 km); COLHEIGHT=0: heights don't shrink
+  ...(process.env.COLSIZE ? { 'snowmap.colSize': process.env.COLSIZE } : {}),
+  'snowmap.colHeightFollow': process.env.COLHEIGHT === '0' ? '0' : '1',
 };
-await page.evaluateOnNewDocument((flags) => {
-  try {
-    for (const [k, v] of Object.entries(flags)) localStorage.setItem(k, v);
-  } catch {}
-}, flags);
-await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-await page.waitForFunction(() => window.snowMap && window.snowApp, { timeout: 120000 });
-if (COLUMNS) await page.waitForFunction(() => window.snowApp.columns, { timeout: 180000 });
+/**
+ * One headless browser with the app loaded. Video frames can be split across
+ * several of these (WORKERS): every frame sets time + camera itself, so the
+ * output does not depend on which worker rendered it or in which order.
+ */
+async function openWorker() {
+  const browser = await puppeteer.launch({
+    executablePath: browserPath,
+    headless: true,
+    args: process.env.GPU === '0' ? swArgs : gpuArgs,
+    defaultViewport: { width: W, height: H, deviceScaleFactor: SSAA },
+    protocolTimeout: 900000,
+  });
+  const page = await browser.newPage();
+  page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+  await page.evaluateOnNewDocument((flags) => {
+    try {
+      for (const [k, v] of Object.entries(flags)) localStorage.setItem(k, v);
+    } catch {}
+  }, flags);
+  await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await page.waitForFunction(() => window.snowMap && window.snowApp, { timeout: 120000 });
+  if (COLUMNS) await page.waitForFunction(() => window.snowApp.columns, { timeout: 180000 });
+  return { browser, page };
+}
+const main = await openWorker();
+const page = main.page;
 const suffix =
   (LAYER === 'snowfall' ? '' : '-' + LAYER) +
   (COLUMNS ? '-columns' : '') +
-  (COLUMNS && process.env.DENSITY === '1' ? '-dichte' : '') +
-  (COLUMNS && process.env.COLFADE === '1' ? '-fuss' : '');
+  (COLUMNS && process.env.DENSITY === '0' ? '-ohne-dichte' : '') +
+  (COLUMNS && process.env.COLFADE === '0' ? '-ohne-fuss' : '') +
+  (COLUMNS && process.env.COLSIZE ? '-s' + process.env.COLSIZE : '') +
+  (process.env.TAG ? '-' + process.env.TAG : '');
 
 const renderer = await page.evaluate(() => {
   const gl = document.createElement('canvas').getContext('webgl2');
@@ -132,7 +153,7 @@ async function timeline(n) {
 const ease = (f) => f * f * (3 - 2 * f); // smooth start/stop of the camera
 
 /** Apply time t + camera progress f and wait until it is fully on screen */
-async function frame(t, f) {
+async function frame(page, t, f) {
   return page.evaluate(
     async (t, f, shot) => {
       const { time, surfaceReady } = window.snowApp;
@@ -160,7 +181,7 @@ await mkdir(OUT, { recursive: true });
 const downscale = ['-vf', `scale=${W}:${H}:flags=lanczos`];
 
 if (mode === 'still') {
-  const ms = await frame(96, 1);
+  const ms = await frame(page, 96, 1);
   const raw = path.join(OUT, `${shotName}-raw.png`);
   const file = path.join(OUT, `${shotName}${suffix}.png`);
   await page.screenshot({ path: raw });
@@ -170,18 +191,33 @@ if (mode === 'still') {
 } else {
   const n = Number(framesArg);
   const ts = await timeline(n);
-  const dir = path.join(OUT, 'frames');
+  // per-video frame folder, so several renders can run side by side
+  const dir = path.join(OUT, `frames-${shotName}${suffix}`);
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
+  // WORKERS: parallel browsers. The GPU is mostly idle while one browser waits for
+  // tiles and encodes PNGs, so 2–3 workers render clearly faster (~1.3 GB RAM each).
+  const nWorkers = Math.max(1, Math.min(n, Number(process.env.WORKERS ?? 2)));
+  const workers = [main, ...(await Promise.all(Array.from({ length: nWorkers - 1 }, openWorker)))];
+  console.log(`${nWorkers} worker(s)`);
   const t0 = Date.now();
-  for (let i = 0; i < n; i++) {
-    const ms = await frame(ts[i], ease(i / (n - 1)));
-    await page.screenshot({ path: path.join(dir, `${String(i).padStart(4, '0')}.png`) });
-    if (i % 12 === 0 || i === n - 1) {
-      const s = (Date.now() - t0) / 1000;
-      console.log(`frame ${i + 1}/${n} t=${ts[i].toFixed(1)} h (${ms} ms, ${s.toFixed(0)} s, ~${((s / (i + 1)) * (n - i - 1)).toFixed(0)} s left)`);
-    }
-  }
+  let next = 0;
+  let done = 0;
+  await Promise.all(
+    workers.map(async ({ page }) => {
+      while (next < n) {
+        const i = next++; // shared queue: neighbouring frames spread across workers
+        const ms = await frame(page, ts[i], ease(i / (n - 1)));
+        await page.screenshot({ path: path.join(dir, `${String(i).padStart(4, '0')}.png`), optimizeForSpeed: true });
+        done++;
+        if (done % 12 === 0 || done === n) {
+          const s = (Date.now() - t0) / 1000;
+          console.log(`frame ${done}/${n} (${ms} ms, ${s.toFixed(0)} s, ${(s / done).toFixed(2)} s/frame, ~${((s / done) * (n - done)).toFixed(0)} s left)`);
+        }
+      }
+    }),
+  );
+  for (const w of workers.slice(1)) await w.browser.close();
   const mp4 = path.join(OUT, `${shotName}${suffix}.mp4`);
   // hold the last frame for a second, downscale (SSAA), high-quality x264
   execFileSync(FFMPEG, [
@@ -189,6 +225,7 @@ if (mode === 'still') {
     '-vf', `tpad=stop_mode=clone:stop=${HOLD},scale=${W}:${H}:flags=lanczos`,
     '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4,
   ]);
-  console.log(`saved ${mp4}`);
+  await rm(dir, { recursive: true, force: true });
+  console.log(`saved ${mp4} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
 }
-await browser.close();
+await main.browser.close();

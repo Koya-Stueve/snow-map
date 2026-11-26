@@ -102,6 +102,8 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
   private program?: WebGLProgram;
   private vao?: WebGLVertexArrayObject;
   private heightBuf?: WebGLBuffer;
+  private gl?: WebGL2RenderingContext;
+  private buffers: WebGLBuffer[] = [];
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private heights: Float32Array;
   private dirty = true;
@@ -117,7 +119,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
   opaqueAt = 0.6;
 
   constructor(
-    readonly grid: ColumnGrid,
+    public grid: ColumnGrid,
     public style: ColumnStyle,
   ) {
     this.heights = new Float32Array(grid.count);
@@ -125,6 +127,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
 
   /** Column heights in metres (unexaggerated), one per column */
   setHeights(h: Float32Array) {
+    if (h.length !== this.heights.length) return; // stale heights for a replaced grid
     this.heights.set(h);
     this.dirty = true;
     this.map?.triggerRepaint();
@@ -148,7 +151,26 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     this.program = p;
     for (const u of ['u_matrix', 'u_exag', 'u_heightExag', 'u_low', 'u_mid', 'u_high', 'u_ref', 'u_alphaLow', 'u_opaqueAt', 'u_pass', 'u_baseFade'])
       this.uniforms[u] = gl.getUniformLocation(p, u);
+    this.gl = gl;
+    this.upload();
+  }
 
+  /** Swap in a new column grid (e.g. finer columns after zooming in) */
+  setGrid(grid: ColumnGrid) {
+    this.grid = grid;
+    this.heights = new Float32Array(grid.count);
+    this.upload();
+    this.map?.triggerRepaint();
+  }
+
+  /** (Re)create the instance buffers for the current grid */
+  private upload() {
+    const gl = this.gl;
+    const p = this.program;
+    if (!gl || !p) return;
+    for (const b of this.buffers) gl.deleteBuffer(b);
+    this.buffers = [];
+    if (this.vao) gl.deleteVertexArray(this.vao);
     const g = this.grid;
     const n = g.count;
     const center = new Float32Array(n * 2);
@@ -156,7 +178,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     const z = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
       const c = maplibregl.MercatorCoordinate.fromLngLat([g.lon[i], g.lat[i]]);
-      const e = maplibregl.MercatorCoordinate.fromLngLat([g.lon[i] + g.dLon / 2, g.lat[i] - g.dLat / 2]);
+      const e = maplibregl.MercatorCoordinate.fromLngLat([g.lon[i] + g.stepLon[i] / 2, g.lat[i] - g.stepLat[i] / 2]);
       center[i * 2] = c.x;
       center[i * 2 + 1] = c.y;
       // slim columns with clear gaps (Inspo look)
@@ -173,6 +195,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     const attr = (name: string, data: Float32Array, size: number, divisor: number, usage: number = gl.STATIC_DRAW) => {
       const loc = gl.getAttribLocation(p, name);
       const buf = gl.createBuffer()!;
+      this.buffers.push(buf);
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
       gl.bufferData(gl.ARRAY_BUFFER, data, usage);
       gl.enableVertexAttribArray(loc);
@@ -186,6 +209,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     attr('a_half', half, 2, 1);
     attr('a_z', z, 3, 1);
     this.heightBuf = attr('a_height', this.heights, 1, 1, gl.DYNAMIC_DRAW);
+    this.dirty = true;
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
@@ -247,5 +271,7 @@ export class ColumnsLayer implements maplibregl.CustomLayerInterface {
     // GL objects die with the context on style changes; nothing to keep
     this.program = undefined;
     this.vao = undefined;
+    this.gl = undefined;
+    this.buffers = [];
   }
 }

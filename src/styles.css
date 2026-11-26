@@ -212,8 +212,35 @@ body {
 }
 .column-opts {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
+}
+/* Column size slider, styled like the option chips */
+.column-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  cursor: default;
+}
+.column-size input {
+  width: 96px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.column-size span {
+  min-width: 6.5ch;
+  color: var(--fg-muted);
+}
+@media (pointer: coarse) {
+  /* bigger touch target on phones */
+  .column-size input {
+    width: 120px;
+    height: 24px;
+  }
 }
 .refine-toggle.active {
   color: var(--fg);

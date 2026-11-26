@@ -14,7 +14,7 @@ import { loadTerrainIndex, registerTerrainProtocols, terrainInfoForWorkers } fro
 import { buildLut, PALETTES, type ColorLut } from './render/palette';
 import { SurfaceRenderer, SurfaceSync } from './render/surface/surfaceSource';
 import { ELEV_FACTOR_MAX, ELEV_FACTOR_MIN, ELEV_GAIN_PER_M } from './render/surface/shading';
-import { buildColumnGrid, type ColumnGrid } from './render/columns/columnGrid';
+import { buildColumnGrid, SUB, type ColumnGrid } from './render/columns/columnGrid';
 import { ColumnsLayer } from './render/columns/columnsLayer';
 import { CellGrid } from './data/cellGrid';
 
@@ -188,22 +188,89 @@ const denseHref = dataset.elevationMean ? cellGrid.scatter(dataset.elevationMean
 let columns: ColumnsLayer | null = null;
 let columnsLoading: Promise<void> | null = null;
 
+/** DEM tile URL for the column ground heights: local high-res tiles, else AWS Terrarium */
+function columnDemUrl() {
+  const info = terrainInfoForWorkers();
+  const dem = new Set(info.demKeys);
+  return (z: number, x: number, y: number) =>
+    dem.has(`${z}/${x}/${y}`)
+      ? `${info.base}dem/${z}/${x}/${y}.${info.ext}`
+      : `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+}
+
+// --- Column size follows the zoom ---
+// With a size set (columnOpts.sizePx), columns keep roughly that spacing on
+// screen: close shots get many small columns, far views few large ones. Fine
+// columns are only built around the map centre (budget below), the rest of
+// Japan keeps the coarse split.
+const FINE_MAX_COLUMNS = 250_000;
+const MAX_SUB = 40;
+let columnSub = SUB; // split currently used around the centre
+let columnsKey = '';
+let columnsBuild: Promise<void> | null = null;
+let columnsBuildGen = 0;
+
+/** Split per cell for the current view (+ a key that changes only when a rebuild is worth it) */
+function columnPlan(): { key: string; sub: number; subFor: (cell: number) => number } {
+  const g = dataset.grid;
+  if (!columnOpts.sizePx) return { key: 'fixed', sub: SUB, subFor: () => SUB };
+  const c = map.getCenter();
+  const cosLat = Math.cos((c.lat * Math.PI) / 180);
+  const metersPerPx = (40075016.686 * cosLat) / (512 * 2 ** map.getZoom());
+  const cellM = Math.sqrt(g.dLon * 111320 * cosLat * g.dLat * 110574);
+  const sub = Math.min(MAX_SUB, Math.max(1, Math.round(cellM / (columnOpts.sizePx * metersPerPx))));
+  if (sub <= SUB) return { key: `u${sub}`, sub, subFor: () => sub };
+  // fine split for the cells nearest to the centre, as many as the budget allows
+  const radius = Math.sqrt(FINE_MAX_COLUMNS / (sub * sub) / Math.PI); // in cells
+  const q = Math.max(1, radius / 4); // snap the centre so small pans don't rebuild
+  const qx = Math.round((c.lng - g.lon0) / g.dLon / q) * q;
+  const qy = Math.round((c.lat - g.lat0) / g.dLat / q) * q;
+  const r2 = radius * radius;
+  return {
+    key: `f${sub}|${qx}|${qy}`,
+    sub,
+    subFor: (d) => {
+      const dx = (d % g.nx) - qx;
+      const dy = Math.floor(d / g.nx) - qy;
+      return dx * dx + dy * dy <= r2 ? sub : SUB;
+    },
+  };
+}
+
+/** Column heights shrink with the columns (keeps their proportions), see columnOpts.heightFollow */
+const columnHeightFactor = () => (columnOpts.sizePx && columnOpts.heightFollow ? Math.min(2, SUB / columnSub) : 1);
+
 /** Build the column geometry on first use (needs terrain heights per column) */
 function ensureColumns(): Promise<void> {
   columnsLoading ??= (async () => {
-    const info = terrainInfoForWorkers();
-    const dem = new Set(info.demKeys);
-    const url = (z: number, x: number, y: number) =>
-      dem.has(`${z}/${x}/${y}`)
-        ? `${info.base}dem/${z}/${x}/${y}.${info.ext}`
-        : `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
-    const grid = await buildColumnGrid(dataset.grid, dataset.cells, url);
+    const plan = columnPlan();
+    const grid = await buildColumnGrid(dataset.grid, dataset.cells, columnDemUrl(), plan.subFor);
+    columnsKey = plan.key;
+    columnSub = plan.sub;
     columns = new ColumnsLayer(grid, { ...MAP_PALETTES[theme].columns, colorRefMeters: COLUMN_COLOR_REF_CM * COLUMN_M_PER_CM });
     addColumnsLayer();
     renderAt(time.state);
+    refreshColumnGrid(); // the view may have moved while building
   })();
   return columnsLoading;
 }
+
+/** Re-split the columns when zoom or centre moved enough (async; surfaceReady waits for it) */
+function refreshColumnGrid() {
+  if (!columns || !columnsMode) return;
+  const plan = columnPlan();
+  if (plan.key === columnsKey) return;
+  columnsKey = plan.key;
+  const gen = ++columnsBuildGen;
+  const build = buildColumnGrid(dataset.grid, dataset.cells, columnDemUrl(), plan.subFor).then((grid) => {
+    if (gen !== columnsBuildGen || !columns) return; // superseded by a newer view
+    columns.setGrid(grid);
+    columnSub = plan.sub;
+    renderAt(time.state);
+  });
+  columnsBuild = build;
+}
+map.on('moveend', refreshColumnGrid);
 function addColumnsLayer() {
   if (!columns || map.getLayer(columns.id)) return;
   columns.style = { ...MAP_PALETTES[theme].columns, colorRefMeters: COLUMN_COLOR_REF_CM * COLUMN_M_PER_CM };
@@ -220,6 +287,7 @@ columnsBtn.addEventListener('click', () => {
   if (columnsMode) {
     if (columns) addColumnsLayer();
     void ensureColumns();
+    refreshColumnGrid();
   } else if (columns && map.getLayer(columns.id)) map.removeLayer(columns.id);
   renderAt(time.state);
 });
@@ -229,13 +297,30 @@ columnsBtn.addEventListener('click', () => {
  * - threshold: columns only above this fraction of the colour range (0.075 ≈ 3 cm of 40)
  * - density: number of columns grows with the amount (full density at `densityFull`)
  * - baseFade: metres over which the column foot fades into the terrain
+ * - sizePx: target column spacing on screen (CSS px); 0 = fixed 2.5 km columns
+ * - heightFollow: column heights scale with the column size (keeps proportions)
  */
 const BASE_FADE_M = 1400;
+// Column size (spacing on screen, CSS px). 35 ≈ 600 m in the close Daisetsu shot,
+// ≈ 3 km in the overview (chosen by the user, 26.11.2026).
+const COLUMN_SIZE_DEFAULT_PX = 35;
+const COLUMN_SIZE_MIN_PX = 12;
+const COLUMN_SIZE_MAX_PX = 140;
+const storedNumber = (key: string, fallback: number) => {
+  try {
+    const v = Number(localStorage.getItem(key) ?? NaN);
+    return Number.isFinite(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
 const columnOpts = {
   threshold: 0.075,
-  density: stored('snowmap.colDensity', false),
+  density: stored('snowmap.colDensity', true),
   densityFull: 0.5,
-  baseFade: stored('snowmap.colFade', false) ? BASE_FADE_M : 0,
+  baseFade: stored('snowmap.colFade', true) ? BASE_FADE_M : 0,
+  sizePx: storedNumber('snowmap.colSize', COLUMN_SIZE_DEFAULT_PX),
+  heightFollow: stored('snowmap.colHeightFollow', true),
 };
 
 // Option chips for the column view (only visible while columns are shown)
@@ -262,6 +347,42 @@ const optChip = (label: string, title: string, get: () => boolean, set: (v: bool
 };
 optChip('Dichte', 'Anzahl der Säulen wächst mit der Schneemenge', () => columnOpts.density, (v) => (columnOpts.density = v), 'snowmap.colDensity');
 optChip('weicher Fuß', 'Säulen laufen nach unten weich ins Gelände aus', () => columnOpts.baseFade > 0, (v) => (columnOpts.baseFade = v ? BASE_FADE_M : 0), 'snowmap.colFade');
+optChip('Höhe mit', 'Säulenhöhe schrumpft mit der Säulengröße (Proportionen bleiben gleich)', () => columnOpts.heightFollow, (v) => (columnOpts.heightFollow = v), 'snowmap.colHeightFollow');
+
+// Size slider: target column spacing on screen. Columns follow the zoom, so the
+// readout shows the resulting spacing on the ground for the current view.
+const sizeBox = document.createElement('label');
+sizeBox.className = 'refine-toggle column-size';
+sizeBox.title = 'Säulengröße auf dem Bildschirm. Nah werden die Säulen dadurch kleiner, fern größer.';
+const sizeSlider = document.createElement('input');
+sizeSlider.type = 'range';
+sizeSlider.min = String(COLUMN_SIZE_MIN_PX);
+sizeSlider.max = String(COLUMN_SIZE_MAX_PX);
+sizeSlider.step = '1';
+sizeSlider.value = String(columnOpts.sizePx || COLUMN_SIZE_DEFAULT_PX);
+sizeSlider.setAttribute('aria-label', 'Säulengröße');
+const sizeReadout = document.createElement('span');
+sizeBox.append('Größe', sizeSlider, sizeReadout);
+columnOptsRow.appendChild(sizeBox);
+/** Ground spacing of the columns around the centre, e.g. "~600 m" */
+const syncSizeReadout = () => {
+  const g = dataset.grid;
+  const cosLat = Math.cos((map.getCenter().lat * Math.PI) / 180);
+  const m = Math.sqrt(g.dLon * 111320 * cosLat * g.dLat * 110574) / columnSub;
+  sizeReadout.textContent = m >= 1000 ? `~${(m / 1000).toFixed(1).replace('.', ',')} km` : `~${Math.round(m / 50) * 50} m`;
+};
+let sizeTimer = 0;
+sizeSlider.addEventListener('input', () => {
+  columnOpts.sizePx = Number(sizeSlider.value);
+  try {
+    localStorage.setItem('snowmap.colSize', sizeSlider.value);
+  } catch {
+    /* storage unavailable */
+  }
+  // rebuilding the grid takes a moment → only once the slider rests briefly
+  clearTimeout(sizeTimer);
+  sizeTimer = window.setTimeout(refreshColumnGrid, 120);
+});
 const syncColumnOptsRow = () => (columnOptsRow.style.display = columnsMode ? '' : 'none');
 syncColumnOptsRow();
 
@@ -273,11 +394,19 @@ function columnSpec(vt: ViewTime) {
       : vt.mode === 'hourly'
         ? { mPerUnit: COLUMN_M_PER_CM * 10, colorRef: 4, ticks: [0, 1, 2, 4] }
         : { mPerUnit: COLUMN_M_PER_CM, colorRef: COLUMN_COLOR_REF_CM, ticks: [0, 10, 20, 40] };
-  return { ...base, minValue: Math.max(COLUMN_MIN_CM * (base.colorRef / COLUMN_COLOR_REF_CM), columnOpts.threshold * base.colorRef) };
+  return {
+    ...base,
+    mPerUnit: base.mPerUnit * columnHeightFactor(),
+    minValue: Math.max(COLUMN_MIN_CM * (base.colorRef / COLUMN_COLOR_REF_CM), columnOpts.threshold * base.colorRef),
+  };
 }
 
-/** Fixed per-column random value in [0,1) (stable over time → no flicker in videos) */
-const columnHash = (i: number) => {
+/**
+ * Fixed per-column random value in [0,1), keyed by position (stable over time and
+ * across grid rebuilds → no flicker in videos)
+ */
+const columnHash = (lon: number, lat: number) => {
+  const i = Math.imul(Math.round(lon * 1e4), 73856093) ^ Math.imul(Math.round(lat * 1e4), 19349663);
   let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
@@ -300,7 +429,7 @@ const columnHeights = (vt: ViewTime, spec: ReturnType<typeof columnSpec>): Float
     if (refined && denseHref && v > 0) v *= Math.min(ELEV_FACTOR_MAX, Math.max(ELEV_FACTOR_MIN, 1 + ELEV_GAIN_PER_M * (g.ground[i] - bil(denseHref))));
     if (v < spec.minValue) continue;
     // density mode: a column appears once the amount passes its own random share
-    if (columnOpts.density && columnHash(i) > Math.min(1, v / (columnOpts.densityFull * spec.colorRef))) continue;
+    if (columnOpts.density && columnHash(g.lon[i], g.lat[i]) >Math.min(1, v / (columnOpts.densityFull * spec.colorRef))) continue;
     out[i] = v * spec.mPerUnit;
   }
   return out;
@@ -384,7 +513,8 @@ function renderAt(vt: ViewTime) {
   if (columns) {
     const spec = columnSpec(vt);
     columns.visible = columnsMode;
-    columns.baseFade = columnOpts.baseFade;
+    columns.baseFade = columnOpts.baseFade * columnHeightFactor();
+    syncSizeReadout();
     columns.style = { ...MAP_PALETTES[theme].columns, colorRefMeters: spec.colorRef * spec.mPerUnit };
     if (columnsMode) columns.setHeights(columnHeights(vt, spec));
   }
@@ -427,7 +557,15 @@ time.subscribe(renderAt);
 if (columnsMode) void ensureColumns();
 
 /** Resolves when the surface tiles of the last rendered state are on screen. */
-const surfaceReady = () => surfaceSync.waitForVersion(lastVersion);
+const surfaceReady = async () => {
+  // a pending column re-split re-renders the state when done → wait for it first
+  while (columnsBuild) {
+    const b = columnsBuild;
+    await b;
+    if (columnsBuild === b) columnsBuild = null;
+  }
+  return surfaceSync.waitForVersion(lastVersion);
+};
 
 // Expose for debugging and later export tooling
 Object.assign(window, { snowMap: map, snowApp: {
@@ -443,6 +581,10 @@ Object.assign(window, { snowMap: map, snowApp: {
       return columns;
     },
     columnOpts,
+    refreshColumnGrid,
+    get columnSub() {
+      return columnSub;
+    },
     lutFor,
   },
 });

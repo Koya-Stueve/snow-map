@@ -14,13 +14,26 @@ Stand: 26.11.2026. Diese Datei ist die Übergabe zwischen Rechnern bzw. Claude-S
 - **Oberfläche:** Worker-Shader in `src/render/surface/` mit Licht, AO und Schnee pro Pixel, 512-px-Kacheln bei hoher Bildschirmauflösung und im Render-Modus.
   - Umschalter „optisch verfeinert“ für Schnee nach Höhe, Neigung, Leeseite und Schneefallgrenze (siehe README).
 - **Layer:** Neuschnee (Summe/Stündlich) und Schneehöhe, umschaltbar in der Zeitleiste.
-- **Säulen-Ansicht** (`src/render/columns/`): Instancing mit ~85 000 Säulen, Farbe dunkelblau → weiß → pink.
-  - Standard: deckend, Säulen erst ab 3 cm.
-  - Schalter „Dichte“ (mehr Schnee = mehr Säulen) und „weicher Fuß“.
+- **Säulen-Ansicht** (`src/render/columns/`): Instancing, Farbe dunkelblau → weiß → pink, deckend, Säulen erst ab 3 cm.
+  - **Größe folgt dem Zoom:** Regler „Größe“ = Säulenabstand auf dem Bildschirm (Standard 35 px, ~600 m im nahen Daisetsu-Shot, ~3 km in der Übersicht). Jede Prognose-Zelle wird dafür in 1×1 bis 40×40 Säulen geteilt; feine Säulen nur um die Bildmitte (max. ~250 000), außen grob. Höhe schrumpft mit (Schalter „Höhe mit“).
+  - Schalter „Dichte“ (mehr Schnee = mehr Säulen) und „weicher Fuß“, beide standardmäßig an.
+  - Offen: Bei Kameraflügen mit Zoom springt die Säulengröße in Stufen (bei den jetzigen Videos mit festem Zoom kein Problem). Später überblenden.
   - Den Glas-Effekt hat der Nutzer ausprobiert und verworfen.
 - **Rendern:** `scripts/render-preview.mjs` rendert Bild für Bild auf der GPU, mit 2× Supersampling, 1080 × 1920, x264 CRF 16.
   - Der Zeitraffer gibt schneereichen Stunden mehr Bilder.
-  - Optionen: `COLUMNS=1`, `DENSITY=1`, `COLFADE=1`, `LAYER=snow_depth`.
+  - Optionen: `COLUMNS=1`, `DENSITY=0`/`COLFADE=0` (aus), `COLSIZE=px`, `COLHEIGHT=0`, `LAYER=snow_depth`, `WORKERS=n`, für Standbilder `ZOOM`/`PITCH`/`BEARING` und `TAG` (Dateiname).
+  - `WORKERS`: mehrere Browser rendern parallel (Standard 2, je ~1,3 GB RAM). Engpass ist nicht die GPU, sondern das Speichern der Screenshots (~2 s von ~2,8 s pro Bild).
+  - Gemessen am Desktop (RX 5700, Ryzen 5 5600X, 16 GB), 2160 × 3840 intern:
+
+    | WORKERS | s/Bild | Faktor |
+    |---|---|---|
+    | 1 | 2,84 | 1× |
+    | 2 | 1,43 | 2,0× |
+    | 3 | 1,22 | 2,3× (Desktop-Standard) |
+    | 4 | 1,07 | 2,7×, aber nur noch 1,9 GB RAM frei |
+
+    Ein 240-Bilder-Video dauert mit 3 Workern 3–4 min (Fläche und Säulen ähnlich). Laptop-Werte fehlen noch, bitte nachtragen.
+- **Orte im Video:** Weitere Hokkaido-Spots mit niedriger Priorität (Hanazono, Annupuri, Moiwa, Kiroro, Kurodake, Sahoro). Sie füllen die nahen Shots und werden auf der Übersicht bei Kollisionen zuerst ausgeblendet. Der Tomamu-Shot schaut jetzt nach Nordosten, damit Sahoro mit im Bild ist.
 
 ## Entscheidungen / Feedback des Nutzers
 
@@ -29,13 +42,13 @@ Stand: 26.11.2026. Diese Datei ist die Übergabe zwischen Rechnern bzw. Claude-S
   - langsamer Zeitraffer, Schnee soll sich aufbauen und nicht plötzlich da sein
   - Kamera nah und tief, mehr Orte im Bild
   - Auflösung ist gut so
-- **Säulen:** A (Schwelle) ist Standard, B (weicher Fuß) und C (Dichte) als Schalter.
+- **Säulen:** Standard ist Schwelle + B (weicher Fuß) + C (Dichte), Größe 35 px mit mitschrumpfender Höhe (vom Nutzer am 26.11. aus Standbildern gewählt: s35 nah und fern). Die festen 2,4-km-Säulen waren im nahen Shot zu groß.
 - **GSI-Kacheln** wurden nur für einen lokalen Test massenhaft geladen. Der saubere Weg sind die 基盤地図情報-Downloads in `dem-src/`.
 - **Nur lokal**, noch kein Hosting.
 
 ## Nächste Schritte (Vorschlag)
 
-1. Am Desktop (RX 5700) Videos mit mehr Orten rendern, z. B. Niseko, Daisetsu und Tomamu, Fläche und Säulen.
+1. ~~Videos mit mehr Orten rendern~~: erledigt am 26.11. (Lauf 12 UTC, alle 6 Videos). Feedback des Nutzers dazu abwarten.
 2. Video-Overlay (Phase 3): großer Titel, Max-Zahl, Statistik-Box („≥ 30 cm auf X km²“), mehr Resort-Labels im Bild.
 3. Rest von Phase 1:
    - Statistik-Box
@@ -64,9 +77,9 @@ Stand: 26.11.2026. Diese Datei ist die Übergabe zwischen Rechnern bzw. Claude-S
    git config --add credential.helper ""; git config --add credential.helper "!'C:/Program Files/GitHub CLI/gh.exe' auth git-credential"
    npm install
    ```
-3. Daten (nicht im Git) aus `snow-map-daten.zip` ins Repo-Verzeichnis entpacken:
+3. Daten (nicht im Git) aus `snow-map-daten.zip` ins Repo-Verzeichnis entpacken. Das Zip liegt zum Übertragen in `snow-map-transfer/` (OneDrive; Ordner steht in `.gitignore`). Unter Git Bash kann `tar` keine Zips, deshalb in PowerShell `tar.exe` nutzen:
    ```powershell
-   tar -xf <pfad>\snow-map-daten.zip
+   tar.exe -xf <pfad>\snow-map-daten.zip
    ```
    Das legt `terrain/`, `public/data/`, `dem-src/` und `.cache/gsi` an. Alternativ alles neu erzeugen: `npm run fetch` (~9 min) und `npm run build-terrain` (dauert lange, lädt GSI-Kacheln).
 4. Starten und testen:

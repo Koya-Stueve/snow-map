@@ -22,6 +22,14 @@ export const RESORTS: Resort[] = [
   { id: 'asahidake', name: 'Asahidake', region: 'hokkaido', lon: 142.827, lat: 43.656, baseM: 1100, topM: 1600, label: { dx: 36, dy: -26 } },
   { id: 'furano', name: 'Furano', region: 'hokkaido', lon: 142.343, lat: 43.322, baseM: 245, topM: 1209, label: { dx: -36, dy: 30 } },
   { id: 'tomamu', name: 'Tomamu', region: 'hokkaido', lon: 142.628, lat: 43.068, baseM: 540, topM: 1239, label: { dx: 36, dy: 26 } },
+  // Secondary Hokkaido spots (lower priority: listed after the main resorts so the
+  // greedy layout hides them first on the overview; they fill the close video shots)
+  { id: 'hanazono', name: 'Hanazono', region: 'hokkaido', lon: 140.708, lat: 42.886, baseM: 310, topM: 1200, label: { dx: 36, dy: -30 } },
+  { id: 'annupuri', name: 'Annupuri', region: 'hokkaido', lon: 140.655, lat: 42.853, baseM: 300, topM: 1150, label: { dx: -36, dy: 30 } },
+  { id: 'moiwa', name: 'Moiwa', region: 'hokkaido', lon: 140.620, lat: 42.837, baseM: 360, topM: 800, label: { dx: -36, dy: -30 } },
+  { id: 'kiroro', name: 'Kiroro', region: 'hokkaido', lon: 140.985, lat: 43.074, baseM: 570, topM: 1180, label: { dx: 36, dy: -30 } },
+  { id: 'kurodake', name: 'Kurodake', region: 'hokkaido', lon: 142.930, lat: 43.710, baseM: 670, topM: 1520, label: { dx: 36, dy: 26 } },
+  { id: 'sahoro', name: 'Sahoro', region: 'hokkaido', lon: 142.775, lat: 43.140, baseM: 400, topM: 1030, label: { dx: 36, dy: -30 } },
   // Tohoku
   { id: 'zao', name: 'Zao', region: 'tohoku', lon: 140.405, lat: 38.168, baseM: 780, topM: 1661, label: { dx: 36, dy: 0 } },
   // Nagano / Niigata

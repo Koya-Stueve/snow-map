@@ -17,3 +17,6 @@ dem-src/
 
 # Rendered stills / videos
 /renders/
+
+# Data transfer between machines (snow-map-daten.zip)
+/snow-map-transfer/

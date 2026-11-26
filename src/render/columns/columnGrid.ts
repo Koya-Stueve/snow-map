@@ -1,26 +1,28 @@
-// Geometry for the snow column view: each forecast cell is split into SUB×SUB
-// columns. Per column we need its position, the terrain height at its centre
-// and the lowest terrain under its footprint (so it never floats on a slope),
-// plus precomputed bilinear sampling positions into the coarse grid.
+// Geometry for the snow column view: each forecast cell is split into sub×sub
+// columns (sub may differ per cell: fine near the camera, coarse elsewhere).
+// Per column we need its position and footprint, the terrain height at its
+// centre and the lowest terrain under its footprint (so it never floats on a
+// slope), plus precomputed bilinear sampling positions into the coarse grid.
 
 import type { GridSpec } from '../../data/types';
 
-export const SUB = 4; // 0.1° / 4 ≈ 2.5 km columns
-const DEM_Z = 9;
+/** Default split (0.1° / 4 ≈ 2.5 km columns), used when no size is chosen */
+export const SUB = 4;
 const TILE = 256;
 
 export interface ColumnGrid {
   count: number;
   lon: Float64Array;
   lat: Float64Array;
+  /** Column spacing in degrees (footprint = spacing × FOOTPRINT) */
+  stepLon: Float32Array;
+  stepLat: Float32Array;
   ground: Float32Array; // m at the centre
   groundMin: Float32Array; // m, lowest under the footprint
   /** Coarse grid sampling: SW cell index (dense) + weights; -1 = outside */
   cellIdx: Int32Array;
   tx: Float32Array;
   ty: Float32Array;
-  dLon: number;
-  dLat: number;
 }
 
 const lonToX = (lon: number, z: number) => ((lon + 180) / 360) * 2 ** z * TILE;
@@ -47,44 +49,62 @@ async function decodeTerrarium(url: string): Promise<Float32Array | null> {
   }
 }
 
+// Decoded DEM tiles survive rebuilds (moving the camera re-splits cells often)
+const tileCache = new Map<string, Promise<Float32Array | null>>();
+
+/** DEM zoom that resolves a column of this split well enough (~4+ px per column) */
+const demZoomFor = (sub: number) => (sub >= 12 ? 11 : sub >= 6 ? 10 : 9);
+
 /**
  * Build the column grid for all stored forecast cells (land + coastal buffer);
- * columns whose centre is at/below sea level are dropped.
+ * columns whose centre is at/below sea level are dropped. `subFor` gives the
+ * split per cell (dense cell index → columns per side).
  */
 export async function buildColumnGrid(
   grid: GridSpec,
   cells: Int32Array,
   demUrl: (z: number, x: number, y: number) => string,
+  subFor: (cell: number) => number = () => SUB,
 ): Promise<ColumnGrid> {
-  const dLon = grid.dLon / SUB;
-  const dLat = grid.dLat / SUB;
   // candidate column centres
   const lons: number[] = [];
   const lats: number[] = [];
+  const subs: number[] = [];
   for (const d of cells) {
+    const sub = Math.max(1, Math.round(subFor(d)));
     const cx = grid.lon0 + (d % grid.nx) * grid.dLon;
     const cy = grid.lat0 + Math.floor(d / grid.nx) * grid.dLat;
-    for (let sy = 0; sy < SUB; sy++)
-      for (let sx = 0; sx < SUB; sx++) {
-        lons.push(cx + (sx - (SUB - 1) / 2) * dLon);
-        lats.push(cy + (sy - (SUB - 1) / 2) * dLat);
+    const dLon = grid.dLon / sub;
+    const dLat = grid.dLat / sub;
+    for (let sy = 0; sy < sub; sy++)
+      for (let sx = 0; sx < sub; sx++) {
+        lons.push(cx + (sx - (sub - 1) / 2) * dLon);
+        lats.push(cy + (sy - (sub - 1) / 2) * dLat);
+        subs.push(sub);
       }
   }
 
-  // DEM tiles needed (zoom 9 ≈ 250 m/px)
+  // DEM tiles needed, at a zoom matching each column's size
+  const tileKey = (lon: number, lat: number, z: number) =>
+    `${z}/${Math.floor(lonToX(lon, z) / TILE)}/${Math.floor(latToY(lat, z) / TILE)}`;
   const need = new Set<string>();
-  for (let i = 0; i < lons.length; i++) need.add(`${Math.floor(lonToX(lons[i], DEM_Z) / TILE)}/${Math.floor(latToY(lats[i], DEM_Z) / TILE)}`);
+  for (let i = 0; i < lons.length; i++) need.add(tileKey(lons[i], lats[i], demZoomFor(subs[i])));
   const tiles = new Map<string, Float32Array | null>();
   await Promise.all(
     [...need].map(async (k) => {
-      const [x, y] = k.split('/').map(Number);
-      tiles.set(k, await decodeTerrarium(demUrl(DEM_Z, x, y)));
+      let p = tileCache.get(k);
+      if (!p) {
+        const [z, x, y] = k.split('/').map(Number);
+        p = decodeTerrarium(demUrl(z, x, y));
+        tileCache.set(k, p);
+      }
+      tiles.set(k, await p);
     }),
   );
-  const height = (lon: number, lat: number) => {
-    const px = lonToX(lon, DEM_Z);
-    const py = latToY(lat, DEM_Z);
-    const t = tiles.get(`${Math.floor(px / TILE)}/${Math.floor(py / TILE)}`);
+  const height = (lon: number, lat: number, z: number) => {
+    const px = lonToX(lon, z);
+    const py = latToY(lat, z);
+    const t = tiles.get(`${z}/${Math.floor(px / TILE)}/${Math.floor(py / TILE)}`);
     if (!t) return 0;
     const ix = Math.min(TILE - 1, Math.floor(px) % TILE);
     const iy = Math.min(TILE - 1, Math.floor(py) % TILE);
@@ -95,11 +115,17 @@ export async function buildColumnGrid(
   const ground: number[] = [];
   const groundMin: number[] = [];
   for (let i = 0; i < lons.length; i++) {
-    const g = height(lons[i], lats[i]);
+    const z = demZoomFor(subs[i]);
+    const g = height(lons[i], lats[i], z);
     if (g <= 1) continue; // sea / coast
+    const dLon = grid.dLon / subs[i];
+    const dLat = grid.dLat / subs[i];
     let m = g;
-    for (const [ox, oy] of [[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45], [0, -0.45], [0, 0.45], [-0.45, 0], [0.45, 0]])
-      m = Math.min(m, height(lons[i] + ox * dLon, lats[i] + oy * dLat));
+    for (const [ox, oy] of [[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45], [0, -0.45], [0, 0.45], [-0.45, 0], [0.45, 0]]) {
+      // samples outside a fetched tile read 0 → ignore them instead of sinking the column
+      const h = height(lons[i] + ox * dLon, lats[i] + oy * dLat, z);
+      if (h > 0) m = Math.min(m, h);
+    }
     keep.push(i);
     ground.push(g);
     groundMin.push(Math.max(0, m));
@@ -110,19 +136,21 @@ export async function buildColumnGrid(
     count: n,
     lon: new Float64Array(n),
     lat: new Float64Array(n),
+    stepLon: new Float32Array(n),
+    stepLat: new Float32Array(n),
     ground: Float32Array.from(ground),
     groundMin: Float32Array.from(groundMin),
     cellIdx: new Int32Array(n),
     tx: new Float32Array(n),
     ty: new Float32Array(n),
-    dLon,
-    dLat,
   };
   keep.forEach((src, k) => {
     const lon = lons[src];
     const lat = lats[src];
     cg.lon[k] = lon;
     cg.lat[k] = lat;
+    cg.stepLon[k] = grid.dLon / subs[src];
+    cg.stepLat[k] = grid.dLat / subs[src];
     const fx = (lon - grid.lon0) / grid.dLon;
     const fy = (lat - grid.lat0) / grid.dLat;
     const x0 = Math.min(Math.max(Math.floor(fx), 0), grid.nx - 2);
