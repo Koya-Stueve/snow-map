@@ -1,9 +1,20 @@
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Resort } from '../data/resorts';
 import { layoutLabels, type LabelInput } from '../render/labelLayout';
-import { snowColorCss } from '../render/colorScale';
+import { snowColor, type ColorStop } from '../render/colorScale';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+export interface ValueFormat {
+  format(v: number): string;
+  unit: string;
+  stops: ColorStop[];
+}
+
+function colorCss(stops: ColorStop[], v: number): string {
+  const c = snowColor(v, stops);
+  return c ? `rgb(${c[0]}, ${c[1]}, ${c[2]})` : '';
+}
 
 /**
  * DOM overlay with resort labels ("NISEKO  141 cm") and leader lines.
@@ -48,20 +59,25 @@ export class ResortLabels {
     map.getContainer().appendChild(this.root);
     map.on('render', () => this.schedule());
     window.addEventListener('resize', () => this.schedule());
-    this.setValues({});
   }
 
-  /** cm per resort id; missing/null renders as "–" */
-  setValues(values: Record<string, number | null | undefined>): void {
+  /** Values per resort id; missing/NaN renders as "–". Formatting + colours come from the layer. */
+  setValues(values: Record<string, number | null | undefined>, fmt: ValueFormat): void {
     for (const r of this.resorts) {
       const el = this.items.get(r.id)!.value;
       const v = values[r.id];
       if (v == null || Number.isNaN(v)) {
-        el.innerHTML = '–';
+        el.textContent = '–';
         el.style.color = '';
       } else {
-        el.innerHTML = `${Math.round(v)}<small> cm</small>`;
-        el.style.color = snowColorCss(v);
+        const text = fmt.format(v);
+        const unit = ` ${fmt.unit}`;
+        // Only touch the DOM when the text changes (this runs every animation frame)
+        if (el.dataset.text !== text + unit) {
+          el.dataset.text = text + unit;
+          el.innerHTML = `${text}<small>${unit}</small>`;
+        }
+        el.style.color = colorCss(fmt.stops, v);
       }
     }
     this.schedule();

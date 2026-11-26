@@ -33,8 +33,3 @@ export function snowColor(cm: number, stops: ColorStop[] = SNOW_STOPS): [number,
   }
   return last.color;
 }
-
-export function snowColorCss(cm: number): string {
-  const c = snowColor(cm);
-  return c ? `rgb(${c[0]}, ${c[1]}, ${c[2]})` : 'var(--label-value-none)';
-}

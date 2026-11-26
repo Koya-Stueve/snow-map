@@ -11,11 +11,17 @@
     <header class="hud hud-top">
       <div class="kicker">PROGNOSE · JAPAN</div>
       <h1 class="title">Snow-Map</h1>
+      <div class="readout">
+        <div class="readout-time" id="readout-time"></div>
+        <div class="readout-sub" id="readout-sub"></div>
+      </div>
     </header>
     <div class="hud hud-controls">
       <button id="theme-toggle" class="btn" type="button" aria-label="Theme wechseln">◐</button>
     </div>
-    <footer class="hud hud-source" id="source-line"></footer>
+    <div class="hud hud-bottom" id="hud-bottom">
+      <footer class="source-line" id="source-line"></footer>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

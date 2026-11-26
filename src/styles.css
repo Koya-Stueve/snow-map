@@ -94,14 +94,192 @@ body {
   backdrop-filter: blur(6px);
 }
 
-.hud-source {
-  left: var(--gutter);
-  right: 48px; /* leave room for the attribution "i" button */
-  bottom: calc(12px + env(safe-area-inset-bottom));
+.readout {
+  margin-top: 10px;
+}
+.readout-time {
+  font: 700 clamp(16px, 2.4vw, 22px) / 1.1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.readout-sub {
+  margin-top: 3px;
   font-size: 10px;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
+}
+
+/* Bottom panel: timeline + source line */
+.hud-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(760px, calc(100% - 2 * var(--gutter)));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+}
+.source-line {
+  margin-top: 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
   text-transform: uppercase;
+}
+
+.source-line a {
+  color: inherit;
+}
+.source-line strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.timeline {
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+}
+.tl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tl-options {
+  margin-top: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.tl-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.tl-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.tl-play {
+  width: 44px;
+  height: 44px;
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--bg);
+}
+.tl-play svg {
+  width: 20px;
+  height: 20px;
+}
+.tl-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 14px;
+  margin-left: 6px;
+}
+.tl-slider {
+  --progress: 0%;
+  display: block;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.tl-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--progress), var(--panel-border) var(--progress));
+}
+.tl-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--progress), var(--panel-border) var(--progress));
+}
+.tl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: 3px solid var(--accent);
+}
+.tl-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: 3px solid var(--accent);
+}
+.tl-ticks {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 0;
+  height: 14px;
+  pointer-events: none;
+}
+.tl-tick {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.tl-tick::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 13px;
+  width: 1px;
+  height: 6px;
+  background: var(--fg-muted);
+  opacity: 0.6;
+}
+.tl-chips {
+  display: flex;
+  gap: 4px;
+}
+.tl-chip {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: 11px var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.tl-chip.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.tl-chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+@media (max-width: 480px) {
+  .timeline {
+    padding: 8px;
+  }
+  .tl-chip {
+    padding: 0 8px;
+    font-size: 10.5px;
+  }
 }
 
 /* Resort labels (inspired by the leader-line labels in Inspo) */
