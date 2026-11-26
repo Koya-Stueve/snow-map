@@ -10,6 +10,9 @@ import './styles.css';
 
 import { buildStyle } from './map/style';
 import { loadTheme, saveTheme, type ThemeName } from './theme';
+import { RESORTS } from './data/resorts';
+import { SAMPLE_RESORT_VALUES } from './data/sample';
+import { ResortLabels } from './ui/resortLabels';
 
 // Start view: whole of Hokkaido, fitted to the viewport (desktop + phone)
 const HOKKAIDO_BOUNDS: [[number, number], [number, number]] = [
@@ -48,6 +51,9 @@ map.once('load', () => {
   map.getContainer().querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');
 });
 
+const labels = new ResortLabels(map, RESORTS);
+labels.setValues(SAMPLE_RESORT_VALUES);
+
 document.getElementById('theme-toggle')!.addEventListener('click', () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   saveTheme(theme);
@@ -56,7 +62,7 @@ document.getElementById('theme-toggle')!.addEventListener('click', () => {
 });
 
 document.getElementById('source-line')!.textContent =
-  'Relief: Mapzen Terrain Tiles · Karte: © OpenStreetMap / OpenFreeMap · Schneedaten folgen';
+  'Beispielwerte (keine Prognose) · Relief: Mapzen Terrain Tiles · Karte: © OpenStreetMap / OpenFreeMap';
 
 // Expose for debugging and later export tooling
 (window as unknown as { snowMap: maplibregl.Map }).snowMap = map;

@@ -104,6 +104,86 @@ body {
   text-transform: uppercase;
 }
 
+/* Resort labels (inspired by the leader-line labels in Inspo) */
+:root {
+  --label-bg: rgba(8, 13, 26, 0.88);
+  --label-border: rgba(140, 170, 230, 0.22);
+  --label-name: #eef3ff;
+  --label-value-none: #6f7c9a;
+  --label-leader: rgba(230, 238, 255, 0.75);
+  --label-dot: #5fd3f3;
+  --label-dot-ring: #08101f;
+}
+:root[data-theme='light'] {
+  --label-leader: rgba(15, 26, 42, 0.7);
+  --label-dot: #0e9fc7;
+  --label-dot-ring: #ffffff;
+}
+
+.resort-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.resort-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.resort-leader {
+  stroke: var(--label-leader);
+  stroke-width: 1.2;
+}
+.resort-dot {
+  fill: var(--label-dot);
+  stroke: var(--label-dot-ring);
+  stroke-width: 2;
+}
+.resort-box {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 9px 4px;
+  background: var(--label-bg);
+  border: 1px solid var(--label-border);
+  border-radius: 2px;
+  white-space: nowrap;
+  will-change: transform;
+}
+.resort-name {
+  font: 700 12px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--label-name);
+}
+.resort-value {
+  font: 600 17px/1 var(--font-display);
+  color: var(--label-value-none);
+  font-variant-numeric: tabular-nums;
+}
+.resort-value small {
+  font-size: 0.78em;
+}
+@media (max-width: 480px) {
+  .resort-box {
+    gap: 7px;
+    padding: 4px 6px 3px;
+  }
+  .resort-name {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .resort-value {
+    font-size: 14px;
+  }
+}
+
 /* MapLibre controls follow the theme */
 .maplibregl-ctrl-group {
   background: var(--panel) !important;
