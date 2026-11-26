@@ -171,6 +171,23 @@ body {
   transform: translateX(-100%);
 }
 
+.refine-toggle {
+  margin-top: 2px;
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--fg-muted);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  text-shadow: none;
+}
+.refine-toggle.active {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
 /* Bottom panel: timeline + source line */
 .hud-bottom {
   left: 50%;

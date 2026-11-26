@@ -27,10 +27,20 @@ const MODEL = {
   metaUrl: 'https://api.open-meteo.com/data/dwd_icon/static/meta.json',
 };
 
-/** Variables to fetch. Stored as uint16 = round(value / scale); 65535 = missing. */
+/**
+ * Variables to fetch (≤ 10 keeps it at one API call per location).
+ * Stored as uint16 = round((value − offset) / scale); 65535 = missing.
+ * Display value = stored · scale·toDisplay + offset·toDisplay.
+ */
 const VARIABLES = [
-  { name: 'snowfall', apiUnit: 'cm', scale: 0.01, toDisplay: 1, displayUnit: 'cm', kind: 'sum' },
-  { name: 'snow_depth', apiUnit: 'm', scale: 0.001, toDisplay: 100, displayUnit: 'cm', kind: 'instant' },
+  { name: 'snowfall', scale: 0.01, offset: 0, toDisplay: 1, displayUnit: 'cm', kind: 'sum' },
+  { name: 'snow_depth', scale: 0.001, offset: 0, toDisplay: 100, displayUnit: 'cm', kind: 'instant' },
+  // Snow downscaling: rain/snow line and wind for lee loading
+  { name: 'freezing_level_height', scale: 1, offset: 0, toDisplay: 1, displayUnit: 'm', kind: 'instant' },
+  { name: 'wind_speed_850hPa', scale: 0.1, offset: 0, toDisplay: 1, displayUnit: 'km/h', kind: 'instant' },
+  { name: 'wind_direction_850hPa', scale: 1, offset: 0, toDisplay: 1, displayUnit: '°', kind: 'instant' },
+  // Phase 2 temperature layer
+  { name: 'temperature_2m', scale: 0.01, offset: -60, toDisplay: 1, displayUnit: '°C', kind: 'instant' },
 ] as const;
 
 const FORECAST_DAYS = 8; // ICON Global reaches 7.5 days; trailing empty hours are trimmed
@@ -324,23 +334,41 @@ async function main() {
     if (!nb.length) continue;
     bufferCells.push(i);
     for (const v of VARIABLES) {
+      const circular = v.name.includes('direction'); // mean of 350° and 10° must be 0°, not 180°
       const s = new Float32Array(nTimes);
       for (let t = 0; t < nTimes; t++) {
         let sum = 0;
+        let sx = 0;
+        let sy = 0;
         let n = 0;
         for (const j of nb) {
           const x = series[v.name][slot.get(j)!][t];
-          if (Number.isFinite(x)) {
-            sum += x;
-            n++;
-          }
+          if (!Number.isFinite(x)) continue;
+          if (circular) {
+            sx += Math.cos((x * Math.PI) / 180);
+            sy += Math.sin((x * Math.PI) / 180);
+          } else sum += x;
+          n++;
         }
-        s[t] = n ? sum / n : NaN;
+        s[t] = !n ? NaN : circular ? ((Math.atan2(sy, sx) * 180) / Math.PI + 360) % 360 : sum / n;
       }
       series[v.name].push(s);
     }
   }
   cells = Int32Array.from([...cells, ...bufferCells]);
+
+  // Mean terrain height per cell (5×5 samples, sea → 0): stand-in for the smooth
+  // model orography that the snow downscaling compares the fine DEM against
+  const elevationMean = await Promise.all(
+    Array.from(cells, async (i) => {
+      const lon0 = g.lon0 + (i % g.nx) * g.dLon;
+      const lat0 = g.lat0 + Math.floor(i / g.nx) * g.dLat;
+      let sum = 0;
+      for (let sy = -2; sy <= 2; sy++)
+        for (let sx = -2; sx <= 2; sx++) sum += Math.max(0, await elevation(lon0 + (sx * g.dLon) / 5, lat0 + (sy * g.dLat) / 5));
+      return Math.round(sum / 25);
+    }),
+  );
 
   // Write
   const runId = new Date(runTime).toISOString().slice(0, 13).replace(/[-:]/g, '') + 'Z'; // 20261126T06Z
@@ -354,11 +382,11 @@ async function main() {
     for (let t = 0; t < nTimes; t++)
       for (let c = 0; c < cells.length; c++) {
         const x = series[v.name][c][t];
-        data[t * cells.length + c] = Number.isFinite(x) ? Math.min(65534, Math.max(0, Math.round(x / v.scale))) : 65535;
+        data[t * cells.length + c] = Number.isFinite(x) ? Math.min(65534, Math.max(0, Math.round((x - v.offset) / v.scale))) : 65535;
       }
     const file = `${v.name}.u16`;
     await writeFile(path.join(dir, file), Buffer.from(data.buffer));
-    variables[v.name] = { file, scale: v.scale * v.toDisplay, unit: v.displayUnit, kind: v.kind };
+    variables[v.name] = { file, scale: v.scale * v.toDisplay, offset: v.offset * v.toDisplay, unit: v.displayUnit, kind: v.kind };
   }
 
   const meta = {
@@ -373,6 +401,8 @@ async function main() {
     times,
     grid: g,
     cells: { file: 'cells.i32', count: cells.length },
+    /** Mean terrain height (m) per stored cell, same order as cells.i32 */
+    elevationMean,
     variables,
     // Resort point series in display units (cm), aligned with `times`
     points: resortSeries.map((p) => ({

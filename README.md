@@ -33,6 +33,21 @@ Ohne `npm run fetch` zeigt die App synthetische Beispieldaten, deutlich als solc
 | `node scripts/screenshot.mjs out.png [w] [h]` | Headless-Screenshot (Edge/Chrome), wartet auf die fertig geladene Karte |
 | `npm run build` | Typprüfung + Produktions-Build |
 
+## Oberfläche und Schnee („optisch verfeinert“)
+
+Die Kartenoberfläche wird pro Kachel in Web-Workern berechnet (`src/render/surface/`). Dabei fließen Höhenmodell, Ambient Occlusion, Licht von Nordwesten und Schnee in einem Durchgang zusammen. Diese Kacheln legt MapLibre in 2D und 3D über das Gelände.
+
+Im Modus **optisch verfeinert** (Standard, umschaltbar an der Legende) wird der Modellschnee (~11 km) auf das 5–10-m-Gelände verteilt:
+
+| Faktor | Regel |
+| --- | --- |
+| Höhe | +7 % je 100 m über der mittleren Geländehöhe der Modellzelle (0,35–2,5×) |
+| Schneefallgrenze | etwa Nullgradgrenze − 250 m, mit weichem Übergang. Darunter fällt kein Schnee. |
+| Hangneigung | volle Schneedecke bis 35°, ab ~58° blanker Fels |
+| Exposition | Leehänge (vom Wind in 850 hPa abgewandt) bis +35 %, Luvhänge bis −35 % |
+
+Nullgradgrenze und Wind werden über das gewählte Zeitfenster schneefallgewichtet gemittelt. Das Verfahren ist **eine optische Darstellung, keine Messung und nicht massenerhaltend.** Die Zahlen an den Resorts sind immer die unveränderten Modellwerte.
+
 ## Daten und Lizenzen
 
 - **Wetter:** [Open-Meteo.com](https://open-meteo.com/), Modell DWD ICON Global, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

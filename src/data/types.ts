@@ -38,6 +38,8 @@ export interface ForecastDataset {
    * snowfall in cm (sum over the hour ENDING at times[i]), snow_depth in cm (instant).
    */
   fields: Record<string, Float32Array[]>;
+  /** Mean terrain height (m) per stored cell – reference for elevation-based downscaling */
+  elevationMean?: Float32Array;
   /**
    * Optional exact series at named points (resorts), same units and time axis
    * as `fields`. Labels prefer these over grid interpolation.

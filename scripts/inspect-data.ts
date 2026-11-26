@@ -15,7 +15,7 @@ const n: number = meta.cells.count;
 const cells = new Int32Array((await readFile(path.join(dir, meta.cells.file))).buffer.slice(0));
 console.log(`cells: ${n} (file ${cells.length})`);
 
-for (const [name, v] of Object.entries<{ file: string; scale: number; unit: string; kind: string }>(meta.variables)) {
+for (const [name, v] of Object.entries<{ file: string; scale: number; offset?: number; unit: string; kind: string }>(meta.variables)) {
   const buf = await readFile(path.join(dir, v.file));
   const raw = new Uint16Array(buf.buffer, buf.byteOffset, buf.byteLength / 2);
   let missing = 0;
@@ -23,8 +23,8 @@ for (const [name, v] of Object.entries<{ file: string; scale: number; unit: stri
   let maxAt = -1;
   for (let i = 0; i < raw.length; i++) {
     if (raw[i] === 65535) missing++;
-    else if (raw[i] * v.scale > max) {
-      max = raw[i] * v.scale;
+    else if (raw[i] * v.scale + (v.offset ?? 0) > max) {
+      max = raw[i] * v.scale + (v.offset ?? 0);
       maxAt = i;
     }
   }
@@ -35,7 +35,7 @@ for (const [name, v] of Object.entries<{ file: string; scale: number; unit: stri
     let s = 0;
     for (let t = 0; t < meta.times.length; t++) {
       const q = raw[t * n + c];
-      if (q !== 65535) s = v.kind === 'sum' ? s + q * v.scale : Math.max(s, q * v.scale);
+      if (q !== 65535) s = v.kind === 'sum' ? s + q * v.scale : Math.max(s, q * v.scale + (v.offset ?? 0));
     }
     if (s > best) {
       best = s;

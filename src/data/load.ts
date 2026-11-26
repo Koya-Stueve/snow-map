@@ -12,7 +12,8 @@ interface MetaFile {
   times: number[];
   grid: GridSpec;
   cells: { file: string; count: number };
-  variables: Record<string, { file: string; scale: number; unit: string; kind: 'sum' | 'instant' }>;
+  variables: Record<string, { file: string; scale: number; offset?: number; unit: string; kind: 'sum' | 'instant' }>;
+  elevationMean?: number[];
   notes: string[];
   points?: Array<{ id: string; elevation: number | null; series: Record<string, (number | null)[]> }>;
 }
@@ -46,11 +47,12 @@ export async function loadForecast(base = `${import.meta.env.BASE_URL}data/`): P
       const raw = new Uint16Array(await getBuffer(dir + v.file));
       if (raw.length !== n * nT) throw new Error(`${v.file}: size mismatch`);
       const perTime: Float32Array[] = [];
+      const offset = v.offset ?? 0;
       for (let t = 0; t < nT; t++) {
         const f = new Float32Array(n);
         for (let c = 0; c < n; c++) {
           const q = raw[t * n + c];
-          f[c] = q === MISSING ? NaN : q * v.scale;
+          f[c] = q === MISSING ? NaN : q * v.scale + offset;
         }
         perTime.push(f);
       }
@@ -72,6 +74,8 @@ export async function loadForecast(base = `${import.meta.env.BASE_URL}data/`): P
     grid: meta.grid,
     cells,
     fields,
+    elevationMean:
+      meta.elevationMean?.length === n ? Float32Array.from(meta.elevationMean) : undefined,
     points: meta.points
       ? Object.fromEntries(
           meta.points.map((p) => [

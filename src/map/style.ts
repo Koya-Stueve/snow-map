@@ -1,13 +1,13 @@
 import type { StyleSpecification } from 'maplibre-gl';
 import { MAP_PALETTES, type ThemeName } from '../theme';
-import { AO_TILES, DEM_TILES } from './terrainSource';
+import { DEM_TILES } from './terrainSource';
+import { SURFACE_LAYER_ID, SURFACE_SOURCE_ID, surfaceTiles } from '../render/surface/surfaceSource';
 
 // Free, keyless sources. Attributions are shown in our own source line (main.ts).
 export const OPENFREEMAP_TILEJSON = 'https://tiles.openfreemap.org/planet';
 export const GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
 
-export const DEM_SOURCE_ID = 'dem';
-/** Separate DEM source for the 3D mesh (MapLibre recommends not sharing it with hillshade) */
+/** DEM source for the 3D terrain mesh (the surface shader loads DEM tiles itself) */
 export const TERRAIN_SOURCE_ID = 'dem-terrain';
 export const DEFAULT_EXAGGERATION = 1.4;
 
@@ -42,64 +42,25 @@ export function buildStyle(theme: ThemeName, opts: StyleOptions = { terrain: fal
         tileSize: 256,
         maxzoom: 14,
       },
-      // GSI-derived local tiles where built, Mapzen/AWS elsewhere (see terrainSource.ts)
-      [DEM_SOURCE_ID]: {
-        type: 'raster-dem',
-        tiles: [DEM_TILES],
-        encoding: 'terrarium',
-        tileSize: 256,
-        maxzoom: 14,
-      },
-      ao: {
+      // Terrain light + AO + snow, rendered per tile by the surface workers (version in the URL)
+      [SURFACE_SOURCE_ID]: {
         type: 'raster',
-        tiles: [AO_TILES],
+        tiles: [surfaceTiles(0)],
         tileSize: 256,
         maxzoom: 14,
       },
       omt: {
         type: 'vector',
-        url: OPENFREEMAP_TILEJSON,
-        attribution:
-          '<a href="https://openfreemap.org">OpenFreeMap</a> · <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>',
+        url: OPENFREEMAP_TILEJSON, // credits are in our own source line (main.ts)
       },
     },
     layers: [
       { id: 'background', type: 'background', paint: { 'background-color': p.background } },
       {
-        id: 'hillshade',
-        type: 'hillshade',
-        source: DEM_SOURCE_ID,
-        paint: {
-          'hillshade-shadow-color': p.hillshadeShadow,
-          'hillshade-highlight-color': p.hillshadeHighlight,
-          'hillshade-accent-color': p.hillshadeAccent,
-          'hillshade-exaggeration': p.hillshadeExaggeration,
-          'hillshade-illumination-direction': 315,
-        },
-      },
-      // Weather rasters are inserted here (between the base relief and this shading)
-      {
-        id: 'snow-shade',
-        type: 'hillshade',
-        source: DEM_SOURCE_ID,
-        paint: {
-          'hillshade-shadow-color': p.snowShadeColor,
-          'hillshade-highlight-color': 'rgba(255,255,255,0)',
-          'hillshade-accent-color': 'rgba(0,0,0,0)',
-          'hillshade-exaggeration': p.snowShadeExaggeration,
-          'hillshade-illumination-direction': 315,
-        },
-      },
-      // Precomputed ambient occlusion (black with alpha) over terrain and snow
-      {
-        id: 'ambient-occlusion',
+        id: SURFACE_LAYER_ID,
         type: 'raster',
-        source: 'ao',
-        paint: {
-          'raster-opacity': p.aoOpacity,
-          'raster-resampling': 'linear',
-          'raster-fade-duration': 0,
-        },
+        source: SURFACE_SOURCE_ID,
+        paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
       {
         id: 'water',
@@ -148,10 +109,3 @@ export function buildStyle(theme: ThemeName, opts: StyleOptions = { terrain: fal
     ],
   };
 }
-
-/**
- * Weather rasters go between the full relief and a shadow-only hillshade: the
- * snow covers the base relief but keeps a shaded 3D texture, and the opaque
- * water layer masks values over the sea.
- */
-export const WEATHER_INSERT_BEFORE = 'snow-shade';
